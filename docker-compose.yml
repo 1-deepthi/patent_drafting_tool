@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: patent_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis is intentionally NOT included yet — it's added once Phase 6
+  # (long-running AI refinement) or Phase 7 (multi-document generation)
+  # actually needs a Celery broker. See the Kiro build guide, Phase 1.
+
+volumes:
+  pgdata:

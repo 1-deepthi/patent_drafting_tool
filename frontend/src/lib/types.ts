@@ -1,0 +1,369 @@
+export interface UserOut {
+  id: number;
+  email: string;
+  full_name: string;
+  phone_number: string | null;
+  profile_picture: string | null;
+  designation: string | null;
+  organization: string | null;
+  account_status: "Pending" | "Approved" | "Rejected" | "Suspended";
+  is_active: boolean;
+  last_login_at: string | null;
+  created_at: string;
+  roles: string[];
+}
+
+export interface MeResponse {
+  user: UserOut;
+  permissions: string[];
+}
+
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+  user: UserOut;
+}
+
+export interface PendingUserOut {
+  id: number;
+  email: string;
+  full_name: string;
+  organization: string | null;
+  created_at: string;
+}
+
+export interface RoleOut {
+  id: number;
+  role_name: string;
+  role_code: string;
+  is_system_role: boolean;
+}
+
+export interface PermissionOut {
+  id: number;
+  permission_name: string;
+  permission_code: string;
+  module_name: string | null;
+  action: string | null;
+}
+
+export interface RbacMatrixResponse {
+  roles: RoleOut[];
+  permissions: PermissionOut[];
+  grants: { role_id: number; permission_id: number }[];
+}
+
+export interface UserAdminOut {
+  id: number;
+  email: string;
+  full_name: string;
+  account_status: string;
+  is_active: boolean;
+  roles: string[];
+  created_at: string;
+}
+
+export const ALL_ROLE_CODES = ["SUPER_ADMIN", "ADMIN", "PATENT_AGENT", "INNOVATOR"] as const;
+export type RoleCode = (typeof ALL_ROLE_CODES)[number];
+
+/** Where each role lands after login. */
+export const ROLE_HOME: Record<string, string> = {
+  SUPER_ADMIN: "/super-admin",
+  ADMIN: "/admin",
+  PATENT_AGENT: "/agent",
+  INNOVATOR: "/innovator",
+};
+
+// ---------------------------------------------------------------------------
+// Teams
+// ---------------------------------------------------------------------------
+
+export interface TeamOut {
+  id: number;
+  team_name: string;
+  team_status: string;
+  created_by: number | null;
+  created_at: string;
+  member_count: number;
+  patent_count: number;
+}
+
+export interface TeamMemberOut {
+  id: number;
+  user_id: number;
+  email: string;
+  full_name: string;
+  membership_status: string | null;
+  added_by: number | null;
+}
+
+export interface TeamDetailOut extends TeamOut {
+  members: TeamMemberOut[];
+}
+
+// ---------------------------------------------------------------------------
+// Patent Applications
+// ---------------------------------------------------------------------------
+
+export interface PatentOut {
+  id: number;
+  team_id: number;
+  invention_title: string;
+  application_status: string;
+  assigned_patent_agent_id: number | null;
+  ai_status: string | null;
+  questionnaire_status: string | null;
+  document_status: string | null;
+  filing_status: string | null;
+  official_application_number: string | null;
+  filing_date: string | null;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AvailableAgentOut {
+  id: number;
+  full_name: string;
+  email: string;
+  active_assignment_count: number;
+}
+
+// ---------------------------------------------------------------------------
+// Basic Information: Applicants & Inventors
+// ---------------------------------------------------------------------------
+
+export const APPLICANT_TYPES = ["Individual", "Startup", "Company", "University"] as const;
+export type ApplicantType = (typeof APPLICANT_TYPES)[number];
+
+export interface ApplicantOut {
+  id: number;
+  patent_application_id: number;
+  applicant_type: string;
+  full_name_or_org_name: string;
+  address: string | null;
+  country: string | null;
+  postal_code: string | null;
+  email: string | null;
+  phone: string | null;
+  is_primary: boolean;
+  display_order: number;
+}
+
+export interface ApplicantInput {
+  applicant_type: ApplicantType;
+  full_name_or_org_name: string;
+  address: string;
+  country: string;
+  postal_code: string;
+  email: string;
+  phone: string;
+  is_primary: boolean;
+}
+
+export interface InventorOut {
+  id: number;
+  patent_application_id: number;
+  user_id: number | null;
+  full_name: string;
+  address: string | null;
+  country: string | null;
+  postal_code: string | null;
+  email: string | null;
+  phone: string | null;
+  inventor_order: number;
+}
+
+export interface InventorInput {
+  full_name: string;
+  address: string;
+  country: string;
+  postal_code: string;
+  email: string;
+  phone: string;
+}
+
+// ---------------------------------------------------------------------------
+// Questionnaire
+// ---------------------------------------------------------------------------
+
+export const INVENTION_TYPES = ["Software", "Mechanical", "Electronics", "Biotech", "Chemistry"] as const;
+export type InventionType = (typeof INVENTION_TYPES)[number];
+
+/** Per-type guidance driving the Technical Details branching (frontend-only —
+ * the DB column is a single shared `technical_description` text field). */
+export const TECHNICAL_DETAILS_GUIDANCE: Record<InventionType, { label: string; placeholder: string }> = {
+  Software: {
+    label: "Technical Description — Architecture & Implementation",
+    placeholder:
+      "Describe the algorithm, system architecture, data flow, and key modules. What makes the implementation technically novel?",
+  },
+  Mechanical: {
+    label: "Technical Description — Structure & Mechanism",
+    placeholder:
+      "Describe the physical components, materials, assembly, and how the mechanism operates. Include dimensions or tolerances if relevant.",
+  },
+  Electronics: {
+    label: "Technical Description — Circuit & Signal Design",
+    placeholder:
+      "Describe the circuit design, key components, signal flow, and any control logic. Note any novel component arrangement.",
+  },
+  Biotech: {
+    label: "Technical Description — Biological Materials & Process",
+    placeholder:
+      "Describe the biological materials, sequences, organisms, or processes involved, and the experimental method used to achieve the result.",
+  },
+  Chemistry: {
+    label: "Technical Description — Composition & Reaction",
+    placeholder:
+      "Describe the chemical composition, formulation, synthesis, or reaction process, including key reagents and conditions.",
+  },
+};
+
+export interface QuestionnaireOut {
+  id: number;
+  patent_application_id: number;
+  questionnaire_status: "Not Started" | "In Progress" | "Completed" | null;
+  completion_percentage: string | null;
+  invention_type: InventionType | null;
+  problem_statement: string | null;
+  proposed_solution: string | null;
+  novelty_description: string | null;
+  technical_description: string | null;
+  advantages: string | null;
+  prior_art: string | null;
+  keywords: string | null;
+  has_existing_drawings: boolean | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface QuestionnaireUpdateInput {
+  invention_type?: InventionType | null;
+  problem_statement?: string | null;
+  proposed_solution?: string | null;
+  novelty_description?: string | null;
+  technical_description?: string | null;
+  advantages?: string | null;
+  prior_art?: string | null;
+  keywords?: string | null;
+  has_existing_drawings?: boolean | null;
+}
+
+export interface QuestionnaireVersionOut {
+  id: number;
+  questionnaire_id: number;
+  patent_application_id: number;
+  version_number: number;
+  version_status: string | null;
+  invention_type: string | null;
+  problem_statement: string | null;
+  proposed_solution: string | null;
+  novelty_description: string | null;
+  technical_description: string | null;
+  advantages: string | null;
+  prior_art: string | null;
+  keywords: string | null;
+  change_reason: string | null;
+  created_by: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// AI Drafting (Phase 6)
+// ---------------------------------------------------------------------------
+
+export const SECTION_TYPES = [
+  "ABSTRACT",
+  "BACKGROUND",
+  "SUMMARY",
+  "DESCRIPTION",
+  "CLAIMS",
+] as const;
+export type SectionType = (typeof SECTION_TYPES)[number];
+
+export const SECTION_LABELS: Record<SectionType, string> = {
+  ABSTRACT: "Abstract",
+  BACKGROUND: "Background",
+  SUMMARY: "Summary",
+  DESCRIPTION: "Detailed Description",
+  CLAIMS: "Claims",
+};
+
+export interface AIOutputOut {
+  id: number;
+  patent_application_id: number;
+  questionnaire_version_id: number;
+  section_type: string;
+  version_number: number;
+  ai_provider: string | null;
+  ai_model: string | null;
+  ai_response: string | null;
+  processing_status: "Processing" | "Completed" | "Failed" | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  created_at: string;
+}
+
+export interface DraftSectionSlot {
+  section_type: string;
+  latest: AIOutputOut | null;
+}
+
+// ---------------------------------------------------------------------------
+// Document generation (Phase 7)
+// ---------------------------------------------------------------------------
+
+export interface DocumentOut {
+  id: number;
+  patent_application_id: number;
+  template_id: number | null;
+  document_type: string | null;
+  output_format: string;
+  watermark_status: string | null;
+  generated_by: number | null;
+  generated_at: string | null;
+}
+
+export interface DocumentVersionOut {
+  id: number;
+  document_id: number;
+  version_number: number;
+  change_summary: string | null;
+  generated_by: number | null;
+  generated_at: string | null;
+}
+
+export type DocumentGenerationJobStatus = "Queued" | "Processing" | "Completed" | "Failed";
+
+export interface DocumentGenerationJobOut {
+  id: number;
+  patent_application_id: number;
+  status: DocumentGenerationJobStatus;
+  triggered_by: number;
+  retried_from_job_id: number | null;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+/** Badge color per lifecycle status — grouped loosely by stage. */
+export const STATUS_COLOR: Record<string, string> = {
+  Draft: "bg-slate-100 text-slate-600",
+  Submitted: "bg-blue-100 text-blue-700",
+  "Awaiting Patent Agent Acceptance": "bg-amber-100 text-amber-700",
+  "Under Review": "bg-indigo-100 text-indigo-700",
+  "Changes Requested": "bg-orange-100 text-orange-700",
+  "Ready for Draft Generation": "bg-indigo-100 text-indigo-700",
+  "Draft Generated": "bg-indigo-100 text-indigo-700",
+  "Ready for Filing": "bg-teal-100 text-teal-700",
+  Filed: "bg-teal-100 text-teal-700",
+  "Examination Requested": "bg-teal-100 text-teal-700",
+  "FER Received": "bg-orange-100 text-orange-700",
+  "FER Response Submitted": "bg-teal-100 text-teal-700",
+  "Hearing Scheduled": "bg-teal-100 text-teal-700",
+  Granted: "bg-emerald-100 text-emerald-700",
+  Rejected: "bg-red-100 text-red-700",
+  Withdrawn: "bg-slate-100 text-slate-500",
+  Abandoned: "bg-slate-100 text-slate-500",
+};

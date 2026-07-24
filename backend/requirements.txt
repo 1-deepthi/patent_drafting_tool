@@ -1,0 +1,23 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+pydantic==2.10.4
+email-validator==2.2.0
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+authlib==1.4.0
+httpx==0.28.1
+pyjwt==2.10.1
+itsdangerous==2.2.0
+python-multipart==0.0.20
+python-docx==1.1.2
+boto3==1.43.54
+loguru==0.7.3
+pytest==8.3.4
+pytest-asyncio==0.25.0
+
+# Added later, at the Phase 6/7 Celery trigger points — not wired up yet:
+# celery==5.4.0
+# redis==5.2.1

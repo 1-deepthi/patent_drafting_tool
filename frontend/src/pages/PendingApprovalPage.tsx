@@ -1,0 +1,48 @@
+import { useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import { ROLE_HOME } from "../lib/types";
+
+export default function PendingApprovalPage() {
+  const { user, status, refreshMe, logout } = useAuth();
+  const navigate = useNavigate();
+
+  // Poll every 30s in case a Super Admin approves while this tab is open.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refreshMe();
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [refreshMe]);
+
+  useEffect(() => {
+    if (status === "approved" && user) {
+      const home = user.roles.map((r) => ROLE_HOME[r]).find(Boolean) || "/";
+      navigate(home, { replace: true });
+    }
+  }, [status, user, navigate]);
+
+  const statusLabel = user?.account_status ?? "Pending";
+  const isRejectedOrSuspended = statusLabel === "Rejected" || statusLabel === "Suspended";
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+      <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+        <h1 className="text-lg font-semibold text-slate-900">
+          {isRejectedOrSuspended ? "Account access restricted" : "Awaiting approval"}
+        </h1>
+        <p className="mt-3 text-sm text-slate-600">
+          {isRejectedOrSuspended
+            ? `Your account status is "${statusLabel}". Contact your Super Admin for details.`
+            : "Your account has been created and is waiting for Super Admin approval. This page will update automatically once you're approved."}
+        </p>
+        <button
+          onClick={logout}
+          className="mt-6 rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+        >
+          Sign out
+        </button>
+      </div>
+    </div>
+  );
+}
