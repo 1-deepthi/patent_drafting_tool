@@ -38,7 +38,21 @@ app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
 
 # Routers are added here as each phase builds them, e.g.:
 # from app.api import documents
-from app.api import ai, auth, basic_info, documents, patents, questionnaire, rbac, teams  # noqa: E402
+from app.api import (  # noqa: E402
+    ai,
+    auth,
+    basic_info,
+    calendar,
+    comments,
+    documents,
+    files,
+    notifications,
+    patents,
+    questionnaire,
+    rbac,
+    teams,
+    templates,
+)
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(rbac.router, prefix="/api/rbac", tags=["rbac"])
@@ -50,6 +64,15 @@ app.include_router(basic_info.router, prefix="/api/patents", tags=["basic-info"]
 app.include_router(questionnaire.router, prefix="/api/patents", tags=["questionnaire"])
 app.include_router(ai.router, prefix="/api/patents", tags=["ai-drafting"])
 app.include_router(documents.router, prefix="/api/patents", tags=["documents"])
+app.include_router(comments.router, prefix="/api/patents", tags=["comments"])
+app.include_router(files.router, prefix="/api/patents", tags=["files"])
+app.include_router(calendar.router, prefix="/api/patents", tags=["calendar"])
+# User-scoped, not nested under a patent — see app/api/notifications.py.
+app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
+# Admin/Super Admin only — not nested under a patent (NEW, closes open item #24).
+app.include_router(templates.router, prefix="/api/templates", tags=["templates"])
+# Cross-patent aggregated view for the standalone Calendar page.
+app.include_router(calendar.calendar_router, prefix="/api/calendar", tags=["calendar"])
 
 
 @app.get("/health", tags=["health"])

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { DashboardShell } from "../components/DashboardShell";
 import { DocumentGenerationPanel } from "../components/DocumentGenerationPanel";
+import { CollaborationPanel } from "../components/CollaborationPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import { apiFetch } from "../lib/api";
 import {
@@ -233,6 +234,10 @@ export default function DraftWorkspacePage() {
             "Completed"
         )}
       />
+
+      <div className="mt-6">
+        <CollaborationPanel patentId={patentId} canManageCalendar={true} />
+      </div>
     </DashboardShell>
   );
 }

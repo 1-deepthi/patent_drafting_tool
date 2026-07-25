@@ -367,3 +367,97 @@ export const STATUS_COLOR: Record<string, string> = {
   Withdrawn: "bg-slate-100 text-slate-500",
   Abandoned: "bg-slate-100 text-slate-500",
 };
+
+// ---------------------------------------------------------------------------
+// Collaboration: Comments, Files, Notifications, Calendar (Phase 8)
+// ---------------------------------------------------------------------------
+
+export interface CommentOut {
+  id: number;
+  patent_application_id: number;
+  user_id: number;
+  user_full_name: string | null;
+  comment_text: string;
+  created_at: string;
+}
+
+export interface FileOut {
+  id: number;
+  patent_application_id: number;
+  uploaded_by: number | null;
+  uploaded_by_name: string | null;
+  original_file_name: string | null;
+  mime_type: string | null;
+  file_size_bytes: number | null;
+  created_at: string;
+}
+
+export type NotificationType =
+  | "Submitted"
+  | "Assigned"
+  | "Accepted"
+  | "Rejected"
+  | "ChangeRequested"
+  | "DraftGenerated"
+  | "FilingRecorded"
+  | "Granted"
+  // NEW — comment/file collaboration activity (closes open item #28)
+  | "CommentAdded"
+  | "FileUploaded"
+  | string;
+
+export interface NotificationOut {
+  id: number;
+  patent_application_id: number | null;
+  invention_title: string | null;
+  notification_type: NotificationType | null;
+  is_read: boolean;
+  created_at: string;
+}
+
+/** Fixed per-type template — notifications carry no free-text body, only
+ * a type + the patent's title (joined in by the API). */
+export const NOTIFICATION_TEXT: Record<string, (title: string) => string> = {
+  Submitted: (t) => `"${t}" was submitted for review.`,
+  Assigned: (t) => `You were assigned to "${t}".`,
+  Accepted: (t) => `Your Patent Agent accepted "${t}".`,
+  Rejected: (t) => `Your Patent Agent declined "${t}".`,
+  ChangeRequested: (t) => `Changes were requested on "${t}".`,
+  DraftGenerated: (t) => `A new draft was generated for "${t}".`,
+  FilingRecorded: (t) => `A filing was recorded for "${t}".`,
+  Granted: (t) => `"${t}" was granted.`,
+  CommentAdded: (t) => `A new comment was posted on "${t}".`,
+  FileUploaded: (t) => `A new file was uploaded to "${t}".`,
+};
+
+export const CALENDAR_EVENT_TYPES = ["Filing Deadline", "Examination", "Hearing", "Reminder"] as const;
+export type CalendarEventType = (typeof CALENDAR_EVENT_TYPES)[number];
+
+export interface CalendarEventOut {
+  id: number;
+  patent_application_id: number;
+  invention_title: string | null;
+  event_type: string | null;
+  event_date: string | null;
+  created_by: number | null;
+}
+
+export interface CalendarEventCreate {
+  event_type: CalendarEventType;
+  event_date: string; // ISO datetime
+}
+
+// ---------------------------------------------------------------------------
+// Templates (NEW — closes open item #24: Templates admin UI + real merging)
+// ---------------------------------------------------------------------------
+
+export interface TemplateOut {
+  id: number;
+  document_type: string;
+  version_number: number;
+  file_path: string | null;
+  original_file_name: string | null;
+  is_active: boolean;
+  edited_by: number | null;
+  edited_by_name: string | null;
+}

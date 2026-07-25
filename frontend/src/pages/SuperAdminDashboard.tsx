@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { DashboardShell } from "../components/DashboardShell";
+import { TemplatesPanel } from "../components/TemplatesPanel";
 import { apiFetch } from "../lib/api";
 import type {
   PendingUserOut,
@@ -8,7 +9,7 @@ import type {
 } from "../lib/types";
 import { ALL_ROLE_CODES } from "../lib/types";
 
-type Tab = "pending" | "matrix" | "users";
+type Tab = "pending" | "matrix" | "users" | "templates";
 
 export default function SuperAdminDashboard() {
   const [tab, setTab] = useState<Tab>("pending");
@@ -25,11 +26,16 @@ export default function SuperAdminDashboard() {
         <TabButton active={tab === "users"} onClick={() => setTab("users")}>
           All Users
         </TabButton>
+        {/* NEW — closes open item #24 */}
+        <TabButton active={tab === "templates"} onClick={() => setTab("templates")}>
+          Templates
+        </TabButton>
       </div>
 
       {tab === "pending" && <PendingApprovalsPanel />}
       {tab === "matrix" && <RbacMatrixPanel />}
       {tab === "users" && <AllUsersPanel />}
+      {tab === "templates" && <TemplatesPanel />}
     </DashboardShell>
   );
 }

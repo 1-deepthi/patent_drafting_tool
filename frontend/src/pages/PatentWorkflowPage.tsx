@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { DashboardShell } from "../components/DashboardShell";
 import { StatusBadge } from "../components/StatusBadge";
+import { CollaborationPanel } from "../components/CollaborationPanel";
 import { apiFetch } from "../lib/api";
 import {
   APPLICANT_TYPES,
@@ -19,7 +20,7 @@ import {
   type QuestionnaireVersionOut,
 } from "../lib/types";
 
-type Tab = "basic-info" | "questionnaire";
+type Tab = "basic-info" | "questionnaire" | "collaboration";
 
 const EMPTY_APPLICANT: ApplicantInput = {
   applicant_type: "Individual",
@@ -143,6 +144,7 @@ export default function PatentWorkflowPage() {
           [
             ["basic-info", "Basic Information"],
             ["questionnaire", "Questionnaire"],
+            ["collaboration", "Files & Comments"],
           ] as [Tab, string][]
         ).map(([key, label]) => (
           <button
@@ -161,8 +163,10 @@ export default function PatentWorkflowPage() {
 
       {tab === "basic-info" ? (
         <BasicInfoTab patentId={patentId} editable={isDraft} />
-      ) : (
+      ) : tab === "questionnaire" ? (
         <QuestionnaireTab patentId={patentId} editable={isDraft} />
+      ) : (
+        <CollaborationPanel patentId={patentId} canManageCalendar={false} />
       )}
     </DashboardShell>
   );

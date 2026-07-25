@@ -12,12 +12,22 @@ always creates a brand NEW job rather than resuming the old one.
 DOCUMENT_TYPES is deliberately a single jurisdiction-agnostic type today
 (open item #1 — jurisdiction still undecided), mirroring Phase 6's
 SECTION_TYPES choice. Admin/Super Admin can define additional Template
-rows for other document_type values later; this service only assumes a
-Template *may* exist for a type, and falls back to a plain generated
-layout if none is active yet (no Template has been created via the API
-in this phase, since none is delivered "out of the box").
+rows for other document_type values later via app/api/templates.py; this
+service only assumes a Template *may* exist for a type, and falls back to
+a plain generated layout if none is active yet.
+
+UPDATE (closes open item #24): real template merging is now wired in.
+An active Template's stored .docx is merged via docxtpl (Jinja-in-DOCX)
+against {{ TITLE }}, {{ ABSTRACT }}, {{ BACKGROUND }}, {{ SUMMARY }},
+{{ DESCRIPTION }}, {{ CLAIMS }}, and {{ WATERMARK_TEXT }} placeholders —
+the admin controls layout/letterhead/headers-footers entirely from the
+uploaded .docx; this service only fills in values. Falls back to the
+previous plain python-docx layout if no Template is active, or if the
+merge itself fails (e.g. a malformed template) — a bad template must
+never take document generation down.
 """
 
+import io
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -25,6 +35,8 @@ from pathlib import Path
 
 from docx import Document as DocxDocument
 from docx.shared import Pt, RGBColor
+from docxtpl import DocxTemplate
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -124,19 +136,39 @@ async def _active_template(db: AsyncSession, *, document_type: str) -> Template 
     return result.scalar_one_or_none()
 
 
-def build_docx_bytes(
+def _merge_with_template(
+    *,
+    template_bytes: bytes,
+    patent: PatentApplication,
+    outputs: dict[str, AIOutput],
+    watermark: bool,
+) -> bytes:
+    """Real template merge via docxtpl. The uploaded .docx owns all
+    layout/letterhead/headers-footers; we only fill in the Jinja
+    placeholders below. Raises on a malformed template — caller decides
+    whether to fall back."""
+    tpl = DocxTemplate(io.BytesIO(template_bytes))
+    context = {
+        "TITLE": patent.invention_title or "Untitled Invention",
+        "WATERMARK_TEXT": "DRAFT — NOT FOR FILING" if watermark else "",
+    }
+    for section_type in SECTION_TYPES:
+        context[section_type] = (outputs[section_type].ai_response or "").strip()
+    tpl.render(context)
+    buffer = io.BytesIO()
+    tpl.save(buffer)
+    buffer.seek(0)
+    return buffer.read()
+
+
+def _build_plain_docx_bytes(
     *,
     patent: PatentApplication,
     outputs: dict[str, AIOutput],
     watermark: bool,
 ) -> bytes:
-    """Builds the DOCX in-memory. Template.file_path (a stored template
-    file with its own styling) is not yet merged against here — no
-    Template row exists out of the box in this phase (Admin has to create
-    one via a future Templates UI) — so this always falls back to a
-    plain, cleanly formatted layout built directly from the AI sections.
-    Revisit once real template merging (headers/footers/letterhead from a
-    stored .dotx) is wanted."""
+    """The original plain, cleanly formatted layout — used whenever no
+    Template is active for this document_type, or a template merge fails."""
     doc = DocxDocument()
 
     if watermark:
@@ -162,6 +194,31 @@ def build_docx_bytes(
     doc.save(buffer)
     buffer.seek(0)
     return buffer.read()
+
+
+def build_docx_bytes(
+    *,
+    patent: PatentApplication,
+    outputs: dict[str, AIOutput],
+    watermark: bool,
+    template_bytes: bytes | None = None,
+) -> bytes:
+    """Public entry point. Merges against template_bytes (the active
+    Template's stored .docx, already loaded by the caller) when provided;
+    falls back to the plain layout if no template is active OR if the
+    merge raises — a bad/malformed template must never block document
+    generation outright."""
+    if template_bytes is not None:
+        try:
+            return _merge_with_template(
+                template_bytes=template_bytes, patent=patent, outputs=outputs, watermark=watermark
+            )
+        except Exception as exc:  # noqa: BLE001 — deliberately broad, see docstring
+            logger.warning(
+                "Template merge failed for patent {}, falling back to plain layout: {}",
+                patent.id, exc,
+            )
+    return _build_plain_docx_bytes(patent=patent, outputs=outputs, watermark=watermark)
 
 
 def convert_docx_to_pdf(docx_bytes: bytes) -> bytes:
@@ -244,7 +301,21 @@ async def run_generation_job(
 
     try:
         watermark = patent.application_status not in _NO_WATERMARK_STATUSES
-        docx_bytes = build_docx_bytes(patent=patent, outputs=outputs, watermark=watermark)
+
+        active_template = await _active_template(db, document_type=document_type)
+        template_bytes: bytes | None = None
+        if active_template is not None and active_template.file_path:
+            try:
+                template_bytes = await storage.load(key=active_template.file_path)
+            except StorageError as exc:
+                logger.warning(
+                    "Could not load active template {} for patent {}, falling back to "
+                    "plain layout: {}", active_template.id, patent.id, exc,
+                )
+
+        docx_bytes = build_docx_bytes(
+            patent=patent, outputs=outputs, watermark=watermark, template_bytes=template_bytes
+        )
 
         if output_format == "PDF":
             file_bytes = await _to_thread_convert(docx_bytes)
@@ -264,12 +335,11 @@ async def run_generation_job(
             )
         )
         document = result.scalar_one_or_none()
-        template = await _active_template(db, document_type=document_type)
 
         if document is None:
             document = Document(
                 patent_application_id=patent.id,
-                template_id=template.id if template else None,
+                template_id=active_template.id if active_template else None,
                 document_type=document_type,
             )
             db.add(document)

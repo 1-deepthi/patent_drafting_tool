@@ -11,6 +11,7 @@ import AgentDashboard from "./pages/AgentDashboard";
 import DraftWorkspacePage from "./pages/DraftWorkspacePage";
 import AdminDashboard from "./pages/AdminDashboard";
 import SuperAdminDashboard from "./pages/SuperAdminDashboard";
+import CalendarPage from "./pages/CalendarPage";
 
 export default function App() {
   return (
@@ -24,6 +25,14 @@ export default function App() {
           <Route path="/not-authorized" element={<NotAuthorizedPage />} />
 
           <Route
+            path="/innovator/calendar"
+            element={
+              <ProtectedRoute requireRole={["INNOVATOR"]}>
+                <CalendarPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/innovator/patents/:id"
             element={
               <ProtectedRoute requireRole={["INNOVATOR"]}>
@@ -36,6 +45,14 @@ export default function App() {
             element={
               <ProtectedRoute requireRole={["INNOVATOR"]}>
                 <InnovatorDashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/agent/calendar"
+            element={
+              <ProtectedRoute requireRole={["PATENT_AGENT"]}>
+                <CalendarPage />
               </ProtectedRoute>
             }
           />
@@ -56,10 +73,26 @@ export default function App() {
             }
           />
           <Route
+            path="/admin/calendar"
+            element={
+              <ProtectedRoute requireRole={["ADMIN"]}>
+                <CalendarPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/admin/*"
             element={
               <ProtectedRoute requireRole={["ADMIN"]}>
                 <AdminDashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/super-admin/calendar"
+            element={
+              <ProtectedRoute requireRole={["SUPER_ADMIN"]}>
+                <CalendarPage />
               </ProtectedRoute>
             }
           />

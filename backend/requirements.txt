@@ -13,6 +13,7 @@ pyjwt==2.10.1
 itsdangerous==2.2.0
 python-multipart==0.0.20
 python-docx==1.1.2
+docxtpl==0.20.2
 boto3==1.43.54
 loguru==0.7.3
 pytest==8.3.4

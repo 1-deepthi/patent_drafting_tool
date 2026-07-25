@@ -55,6 +55,45 @@ export function googleLoginUrl(): string {
   return `${API_URL}/api/auth/google/login`;
 }
 
+/** For multipart uploads — apiFetch always sends Content-Type: application/json,
+ * which breaks a multipart body, so this builds its own fetch with just the
+ * Authorization header and lets the browser set the multipart boundary. */
+export async function apiUpload<T>(
+  path: string,
+  file: File,
+  fieldName = "upload",
+  query?: Record<string, string | number | boolean>,
+): Promise<T> {
+  const formData = new FormData();
+  formData.append(fieldName, file);
+
+  const finalHeaders: Record<string, string> = {};
+  if (currentToken) finalHeaders["Authorization"] = `Bearer ${currentToken}`;
+
+  const qs = query
+    ? "?" + new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)])).toString()
+    : "";
+
+  const response = await fetch(`${API_URL}${path}${qs}`, {
+    method: "POST",
+    headers: finalHeaders,
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let detail = `Upload failed (${response.status})`;
+    try {
+      const body = await response.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      // not JSON — keep the generic message
+    }
+    throw new ApiError(response.status, detail);
+  }
+
+  return (await response.json()) as T;
+}
+
 /** For binary downloads (PDF/DOCX) — apiFetch always parses JSON, so this
  * fetches the blob directly, reads the filename from Content-Disposition,
  * and triggers a normal browser download via a throwaway <a> tag. */
