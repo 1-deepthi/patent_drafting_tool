@@ -75,5 +75,23 @@ class Settings(BaseSettings):
         ".exe", ".bat", ".cmd", ".sh", ".msi", ".com", ".dll", ".scr", ".jar",
     )
 
+    # --- Phase 10 hardening/deployment ---------------------------------
+
+    # Comma-separated Host header allowlist for TrustedHostMiddleware (see
+    # app/main.py). "*" (default) matches every prior phase's wide-open
+    # local-dev behavior; set to your real domain(s) in production
+    # (checked by app/core/startup_checks.py).
+    allowed_hosts: str = "*"
+
+    # slowapi/limits rate limiting (app/core/rate_limit.py). In-memory
+    # storage — per-instance, not shared across replicas; see that
+    # module's docstring for why, and the Redis/Celery note above.
+    rate_limit_enabled: bool = True
+    rate_limit_default: str = "200/minute"
+    # Applied to the two endpoints that mint a session without an existing
+    # one (Google OAuth kickoff, dev-login) — the only unauthenticated,
+    # credential-adjacent routes in the app.
+    rate_limit_auth: str = "10/minute"
+
 
 settings = Settings()

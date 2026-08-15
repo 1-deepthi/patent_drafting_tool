@@ -83,14 +83,20 @@ async def _permission_codes_for_roles(db: AsyncSession, role_codes: set[str]) ->
     return {row[0] for row in result.all()}
 
 
+async def user_has_permission(db: AsyncSession, user: User, permission_code: str) -> bool:
+    """Reusable check behind require_permission() — pulled out so other
+    dependencies (e.g. app/api/reports.py's Admin/Super Admin bypass) can
+    reuse the same role_permissions lookup without duplicating the query."""
+    granted = await _permission_codes_for_roles(db, _active_role_codes(user))
+    return permission_code in granted
+
+
 def require_permission(permission_code: str):
     async def _dependency(
         user: User = Depends(get_current_active_user),
         db: AsyncSession = Depends(get_db),
     ) -> User:
-        role_codes = _active_role_codes(user)
-        granted = await _permission_codes_for_roles(db, role_codes)
-        if permission_code not in granted:
+        if not await user_has_permission(db, user, permission_code):
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
                 f"Missing required permission: {permission_code}",

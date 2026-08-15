@@ -106,3 +106,10 @@ class TemplateOut(BaseModel):
     is_active: bool
     edited_by: int | None = None
     edited_by_name: str | None = None
+
+    # Placeholder-validation info (open item #31) — only ever populated on
+    # the upload response itself, never persisted or backfilled when
+    # listing existing templates, so these are None on every other read.
+    unknown_placeholders: list[str] | None = None
+    unused_known_placeholders: list[str] | None = None
+    template_parse_error: str | None = None

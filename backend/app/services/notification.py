@@ -3,8 +3,8 @@ type-driven — never store custom message text here. The frontend renders
 copy from a fixed template keyed by notification_type, joined to the
 linked patent application for specifics (e.g. invention title) at render
 time. Valid types (per the model's own comment): Submitted / Assigned /
-Accepted / Rejected / ChangeRequested / DraftGenerated / FilingRecorded /
-Granted.
+Accepted / Rejected / Reassigned / ChangeRequested / DraftGenerated /
+FilingRecorded / Granted.
 """
 
 from datetime import datetime, timezone

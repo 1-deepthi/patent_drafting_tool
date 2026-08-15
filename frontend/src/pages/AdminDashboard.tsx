@@ -1,14 +1,30 @@
 // Admin route tree — user approvals belong to Super Admin only per spec
-// (see handover §2/§3.1). Templates management (NEW — closes open item
-// #24) is the first real Admin-scoped workflow; more land here as later
-// phases add features.
+// (see handover §2/§3.1). Templates management (closes open item #24) and
+// the read-only All Patents view (closes open item #13) are Admin-scoped
+// workflows; more land here as later phases add features.
 
+import { Link } from "react-router-dom";
 import { DashboardShell } from "../components/DashboardShell";
 import { TemplatesPanel } from "../components/TemplatesPanel";
 
 export default function AdminDashboard() {
   return (
     <DashboardShell title="Admin">
+      <div className="mb-8 flex items-center justify-between rounded-lg border border-slate-200 bg-white p-4">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-900">All Patents</h2>
+          <p className="text-xs text-slate-500">
+            Browse every patent application in the system (read-only).
+          </p>
+        </div>
+        <Link
+          to="/admin/patents"
+          className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+        >
+          View all patents
+        </Link>
+      </div>
+
       <div className="mb-6 border-b border-slate-200 pb-2">
         <h2 className="text-sm font-semibold text-slate-900">Document Templates</h2>
         <p className="text-xs text-slate-500">

@@ -20,5 +20,33 @@ services:
   # (long-running AI refinement) or Phase 7 (multi-document generation)
   # actually needs a Celery broker. See the Kiro build guide, Phase 1.
 
+  # Phase 10 — for local full-stack testing of the production Docker image
+  # (`docker compose up` gives you postgres + a real gunicorn-served
+  # backend, not just `uvicorn --reload`). NOT how this project is
+  # actually deployed — the target is Koyeb (a single-container PaaS, see
+  # DEPLOYMENT.md), which builds straight from backend/Dockerfile and
+  # doesn't use this compose file at all. DATABASE_URL is overridden below
+  # to the in-network "postgres" hostname; backend/.env's own value
+  # (localhost) is for running the backend directly on the host instead.
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/patent_platform
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
 volumes:
   pgdata:

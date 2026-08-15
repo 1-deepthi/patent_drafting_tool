@@ -66,3 +66,12 @@ class PatentAssignment(Base, IDMixin):
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rejection_reason: Mapped[str | None] = mapped_column(Text)
+
+    # Set only when an Admin/Super Admin force-reassigns a patent that
+    # already has an ACCEPTED agent (open item #7 — see
+    # app/services/patent_service.py's PRE_ASSIGNMENT_STATUSES /
+    # perform_reassignment). Distinct from rejection: the agent didn't
+    # decline, an admin removed them from an application they'd already
+    # accepted.
+    reassigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reassignment_reason: Mapped[str | None] = mapped_column(Text)

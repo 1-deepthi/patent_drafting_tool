@@ -35,8 +35,8 @@ class Notification(Base, IDMixin):
     patent_application_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("patent_applications.id")
     )
-    # Submitted / Assigned / Accepted / Rejected / ChangeRequested /
-    # DraftGenerated / FilingRecorded / Granted
+    # Submitted / Assigned / Accepted / Rejected / Reassigned /
+    # ChangeRequested / DraftGenerated / FilingRecorded / Granted
     notification_type: Mapped[str | None] = mapped_column(String(50))
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

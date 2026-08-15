@@ -12,12 +12,31 @@ from app.core.database import get_db
 from app.models import User
 from app.schemas.questionnaire import QuestionnaireOut, QuestionnaireUpdate, QuestionnaireVersionOut
 from app.services.audit import log_event
+from app.services.patent_service import PRE_ASSIGNMENT_STATUSES
 from app.services.questionnaire_service import (
     apply_update,
     get_or_create_questionnaire,
     list_versions,
     missing_required_fields,
     snapshot_version,
+)
+
+# Editing/submitting the questionnaire is allowed through any
+# PRE_ASSIGNMENT_STATUSES status, not just "Draft". assign/auto-assign can
+# move a patent straight from "Draft" to "Awaiting Patent Agent Acceptance"
+# (a tested, intentional design — see
+# test_can_assign_agent_even_before_submission_but_not_after_acceptance in
+# tests/test_assignment_workflow.py). If this gate stayed Draft-only, an
+# application assigned before submission would have its questionnaire
+# locked forever, since nothing ever moves it back to Draft. See
+# Project_Handover_v14.md §12.3 for the original finding.
+_QUESTIONNAIRE_EDITABLE_ERROR = (
+    "The questionnaire can only be edited before a Patent Agent has "
+    "accepted the assignment"
+)
+_QUESTIONNAIRE_SUBMITTABLE_ERROR = (
+    "The questionnaire can only be submitted before a Patent Agent has "
+    "accepted the assignment"
 )
 
 router = APIRouter()
@@ -46,11 +65,8 @@ async def update_questionnaire(
 ):
     patent = await _get_patent_or_404(db, patent_id)
     await _require_editable_by(db, user, patent)
-    if patent.application_status != "Draft":
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "The questionnaire can only be edited while the application is in Draft",
-        )
+    if patent.application_status not in PRE_ASSIGNMENT_STATUSES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _QUESTIONNAIRE_EDITABLE_ERROR)
 
     q = await get_or_create_questionnaire(db, patent=patent)
     apply_update(q, payload.model_dump(exclude_unset=True))
@@ -69,11 +85,8 @@ async def submit_questionnaire(
 ):
     patent = await _get_patent_or_404(db, patent_id)
     await _require_editable_by(db, user, patent)
-    if patent.application_status != "Draft":
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "The questionnaire can only be submitted while the application is in Draft",
-        )
+    if patent.application_status not in PRE_ASSIGNMENT_STATUSES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _QUESTIONNAIRE_SUBMITTABLE_ERROR)
 
     q = await get_or_create_questionnaire(db, patent=patent)
     missing = missing_required_fields(q)

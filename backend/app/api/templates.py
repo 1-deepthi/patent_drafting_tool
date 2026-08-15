@@ -25,7 +25,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models import Template, User
 from app.schemas.collaboration import TemplateOut
-from app.services.document_service import DOCUMENT_TYPES
+from app.services.document_service import DOCUMENT_TYPES, validate_template_placeholders
 from app.services.file_service import FileValidationError, validate_upload
 from app.services.storage import StorageError, get_storage_provider
 
@@ -148,7 +148,13 @@ async def upload_template(
     db.add(template)
     await db.commit()
     await db.refresh(template)
-    return await _to_template_out(db, template)
+
+    validation = validate_template_placeholders(content)
+    out = await _to_template_out(db, template)
+    out.unknown_placeholders = validation.unknown_placeholders
+    out.unused_known_placeholders = validation.unused_known_placeholders
+    out.template_parse_error = validation.parse_error
+    return out
 
 
 @router.post("/{template_id}/activate", response_model=TemplateOut)

@@ -1,15 +1,17 @@
 import { Fragment, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { DashboardShell } from "../components/DashboardShell";
 import { TemplatesPanel } from "../components/TemplatesPanel";
 import { apiFetch } from "../lib/api";
 import type {
   PendingUserOut,
   RbacMatrixResponse,
+  ReportPermissionMatrixResponse,
   UserAdminOut,
 } from "../lib/types";
 import { ALL_ROLE_CODES } from "../lib/types";
 
-type Tab = "pending" | "matrix" | "users" | "templates";
+type Tab = "pending" | "matrix" | "users" | "templates" | "report-permissions";
 
 export default function SuperAdminDashboard() {
   const [tab, setTab] = useState<Tab>("pending");
@@ -30,12 +32,33 @@ export default function SuperAdminDashboard() {
         <TabButton active={tab === "templates"} onClick={() => setTab("templates")}>
           Templates
         </TabButton>
+        {/* NEW — Phase 9. Which report types (app/api/reports.py's
+            /permissions/matrix) each role may download, independent of
+            the ordinary Role & Permission Matrix's REPORTS_VIEW/
+            REPORTS_DOWNLOAD codes above. */}
+        <TabButton
+          active={tab === "report-permissions"}
+          onClick={() => setTab("report-permissions")}
+        >
+          Report Download Permissions
+        </TabButton>
+        {/* NEW — closes open item #38. Not a tab like the others: it's a
+            real navigation into the shared /admin/patents route (same
+            AdminPatentsPage/AdminPatentDetailPage components Admin uses),
+            not inline content, so it's styled like a tab but is a Link. */}
+        <Link
+          to="/admin/patents"
+          className="border-b-2 border-transparent px-4 py-2 text-sm font-medium text-slate-500 transition hover:text-slate-700"
+        >
+          All Patents
+        </Link>
       </div>
 
       {tab === "pending" && <PendingApprovalsPanel />}
       {tab === "matrix" && <RbacMatrixPanel />}
       {tab === "users" && <AllUsersPanel />}
       {tab === "templates" && <TemplatesPanel />}
+      {tab === "report-permissions" && <ReportPermissionsPanel />}
     </DashboardShell>
   );
 }
@@ -299,6 +322,109 @@ function RbacMatrixPanel() {
                     </tr>
                   ))}
               </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Report download permissions — mirrors RbacMatrixPanel above, but against
+// /api/reports/permissions/matrix (report_type x role, not permission x
+// role). Admin/Super Admin already bypass this at the API layer (see
+// app/services/reports_service.py's can_download() docstring), so those
+// two columns are shown read-only/checked, same convention as
+// RbacMatrixPanel disabling the SUPER_ADMIN column above.
+// ---------------------------------------------------------------------------
+
+function ReportPermissionsPanel() {
+  const [matrix, setMatrix] = useState<ReportPermissionMatrixResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pendingCell, setPendingCell] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      const data = await apiFetch<ReportPermissionMatrixResponse>(
+        "/api/reports/permissions/matrix"
+      );
+      setMatrix(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load report permissions");
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  if (!matrix) return <p className="text-sm text-slate-500">Loading…</p>;
+
+  const isGranted = (roleId: number, reportType: string) =>
+    matrix.grants.some((g) => g.role_id === roleId && g.report_type === reportType);
+
+  async function toggle(roleId: number, reportType: string, grant: boolean) {
+    const key = `${roleId}-${reportType}`;
+    setPendingCell(key);
+    setError(null);
+    try {
+      const updated = await apiFetch<ReportPermissionMatrixResponse>(
+        `/api/reports/permissions/toggle?grant=${grant}`,
+        { method: "POST", body: JSON.stringify({ role_id: roleId, report_type: reportType }) }
+      );
+      setMatrix(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Toggle failed");
+    } finally {
+      setPendingCell(null);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-slate-400">
+        Controls which report types each role may download as CSV. Admin and
+        Super Admin always may — this only matters for Patent Agent and
+        Innovator.
+      </p>
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 bg-slate-50">
+              <th className="px-3 py-2 text-left font-medium text-slate-600">Report</th>
+              {matrix.roles.map((r) => (
+                <th key={r.id} className="px-3 py-2 text-center font-medium text-slate-600">
+                  {r.role_code}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {matrix.report_types.map((rt) => (
+              <tr key={rt.report_type} className="border-b border-slate-100">
+                <td className="px-3 py-2 text-slate-700">
+                  {rt.label}
+                  <span className="ml-1 text-xs text-slate-400">({rt.description})</span>
+                </td>
+                {matrix.roles.map((role) => {
+                  const isAdminLike = role.role_code === "ADMIN" || role.role_code === "SUPER_ADMIN";
+                  const granted = isAdminLike || isGranted(role.id, rt.report_type);
+                  const key = `${role.id}-${rt.report_type}`;
+                  return (
+                    <td key={role.id} className="px-3 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={granted}
+                        disabled={pendingCell === key || isAdminLike}
+                        title={isAdminLike ? "Admin/Super Admin always may download" : undefined}
+                        onChange={(e) => toggle(role.id, rt.report_type, e.target.checked)}
+                      />
+                    </td>
+                  );
+                })}
+              </tr>
             ))}
           </tbody>
         </table>

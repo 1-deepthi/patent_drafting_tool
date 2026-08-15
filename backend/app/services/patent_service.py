@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
@@ -12,6 +14,23 @@ TERMINAL_STATUSES = {"Granted", "Rejected", "Withdrawn", "Abandoned"}
 # Only these statuses may be edited (title change) or (re)assigned to an
 # agent before that agent has accepted.
 PRE_ASSIGNMENT_STATUSES = {"Draft", "Submitted", "Awaiting Patent Agent Acceptance"}
+
+# Statuses eligible for a post-acceptance Admin reassignment (/reassign).
+# Deliberately everything EXCEPT the pre-assignment states (those already
+# go through /assign or /auto-assign, which don't need an admin override
+# since no agent has accepted yet) and the terminal states (reassigning
+# an agent onto a Granted/Rejected/Withdrawn/Abandoned application makes
+# no sense — there's no active work left to hand off).
+POST_ACCEPTANCE_REASSIGNMENT_STATUSES = (
+    set(
+        (
+            "Under Review", "Changes Requested", "Ready for Draft Generation",
+            "Draft Generated", "Ready for Filing", "Filed", "Examination Requested",
+            "FER Received", "FER Response Submitted", "Hearing Scheduled",
+        )
+    )
+    - TERMINAL_STATUSES
+)
 
 
 async def visible_patents_query(db: AsyncSession, *, user: User) -> Select:
@@ -122,6 +141,70 @@ async def perform_assignment(
         entity_type="patent_application",
         entity_id=patent.id,
         metadata={"agent_id": agent_id},
+    )
+    await db.flush()
+    return assignment
+
+
+async def perform_reassignment(
+    db: AsyncSession,
+    *,
+    patent: PatentApplication,
+    new_agent_id: int,
+    reassigned_by_user_id: int,
+    reason: str,
+) -> PatentAssignment:
+    """Admin/Super Admin override of an already-ACCEPTED assignment (open
+    item #7). Per spec item 12, this still can't hand the admin the power
+    to accept/reject on an agent's behalf — the new agent goes back
+    through the normal assignment/accept or assignment/reject endpoints
+    like any other assignment, they just start from an admin's pick
+    instead of the pool. Does NOT commit — caller controls the
+    transaction boundary."""
+    from app.services.audit import log_event
+    from app.services.notification import notify
+
+    previous_agent_id = patent.assigned_patent_agent_id
+    now = datetime.now(timezone.utc)
+
+    previous = await latest_assignment(db, patent_application_id=patent.id)
+    if previous is not None and previous.assignment_status == "Accepted":
+        previous.assignment_status = "Reassigned"
+        previous.reassigned_at = now
+        previous.reassignment_reason = reason
+
+    assignment = PatentAssignment(
+        patent_application_id=patent.id,
+        patent_agent_id=new_agent_id,
+        assigned_by=reassigned_by_user_id,
+        assignment_status="Awaiting Acceptance",
+    )
+    db.add(assignment)
+
+    patent.assigned_patent_agent_id = new_agent_id
+    patent.application_status = "Awaiting Patent Agent Acceptance"
+
+    if previous_agent_id is not None:
+        await notify(
+            db,
+            user_id=previous_agent_id,
+            notification_type="Reassigned",
+            patent_application_id=patent.id,
+        )
+    await notify(
+        db, user_id=new_agent_id, notification_type="Assigned", patent_application_id=patent.id
+    )
+    await log_event(
+        db,
+        user_id=reassigned_by_user_id,
+        event_type="PATENT_AGENT_REASSIGNED",
+        entity_type="patent_application",
+        entity_id=patent.id,
+        metadata={
+            "previous_agent_id": previous_agent_id,
+            "new_agent_id": new_agent_id,
+            "reason": reason,
+        },
     )
     await db.flush()
     return assignment

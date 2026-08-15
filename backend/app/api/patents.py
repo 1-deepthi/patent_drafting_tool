@@ -5,6 +5,15 @@ to teams they're an active member of. Admin/Super Admin can assign or
 reassign an agent BEFORE that agent accepts, but per spec item 12 they can
 never override the agent's own Accept/Reject decision — only the assigned
 agent may call the accept/reject endpoints.
+
+Post-acceptance reassignment (open item #7, closed here): once an agent
+has accepted, /assign and /auto-assign refuse to touch the patent (see
+PRE_ASSIGNMENT_STATUSES). An Admin/Super Admin who needs to pull a patent
+off an agent who already accepted it — the agent went unresponsive, left
+the firm, whatever the real-world reason — uses /reassign instead. It
+still respects item 12: the new agent lands in "Awaiting Patent Agent
+Acceptance" and has to accept or reject like any other assignment, an
+admin can't accept on their behalf.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,16 +30,19 @@ from app.schemas.patents import (
     PatentCreate,
     PatentOut,
     PatentUpdate,
+    ReassignAgentRequest,
     RejectAssignmentRequest,
 )
 from app.services.audit import log_event
 from app.services.notification import notify
 from app.services.patent_service import (
+    POST_ACCEPTANCE_REASSIGNMENT_STATUSES,
     PRE_ASSIGNMENT_STATUSES,
     can_view_patent,
     latest_assignment,
     list_available_agents,
     perform_assignment,
+    perform_reassignment,
     visible_patents_query,
 )
 from app.services.questionnaire_service import basic_info_complete
@@ -54,6 +66,21 @@ async def _get_patent_or_404(db: AsyncSession, patent_id: int) -> PatentApplicat
 async def _require_visible(db: AsyncSession, user: User, patent: PatentApplication) -> None:
     if not await can_view_patent(db, user=user, patent=patent):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Patent application not found")
+
+
+async def _load_approved_agent_or_400(db: AsyncSession, agent_id: int) -> User:
+    agent_result = await db.execute(
+        select(User)
+        .where(User.id == agent_id)
+        .options(selectinload(User.user_roles).selectinload(UserRole.role))
+    )
+    agent = agent_result.scalar_one_or_none()
+    if agent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
+    agent_role_codes = {ur.role.role_code for ur in agent.user_roles if ur.is_active and ur.role}
+    if "PATENT_AGENT" not in agent_role_codes or agent.account_status != "Approved":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "That user is not an approved Patent Agent")
+    return agent
 
 
 @router.post("", response_model=PatentOut, status_code=status.HTTP_201_CREATED)
@@ -198,19 +225,50 @@ async def assign_agent(
             "This application already has an agent who has accepted — it can't be reassigned here",
         )
 
-    agent_result = await db.execute(
-        select(User)
-        .where(User.id == payload.patent_agent_id)
-        .options(selectinload(User.user_roles).selectinload(UserRole.role))
-    )
-    agent = agent_result.scalar_one_or_none()
-    if agent is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
-    agent_role_codes = {ur.role.role_code for ur in agent.user_roles if ur.is_active and ur.role}
-    if "PATENT_AGENT" not in agent_role_codes or agent.account_status != "Approved":
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "That user is not an approved Patent Agent")
+    agent = await _load_approved_agent_or_400(db, payload.patent_agent_id)
 
     await perform_assignment(db, patent=patent, agent_id=agent.id, assigned_by_user_id=user.id)
+    await db.commit()
+    await db.refresh(patent)
+    return patent
+
+
+@router.post("/{patent_id}/reassign", response_model=PatentOut)
+async def reassign_agent(
+    patent_id: int,
+    payload: ReassignAgentRequest,
+    user: User = Depends(require_role("ADMIN", "SUPER_ADMIN")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Post-acceptance override — Admin/Super Admin only, not available to
+    team members (unlike /assign). See module docstring and open item #7."""
+    patent = await _get_patent_or_404(db, patent_id)
+
+    if patent.application_status not in POST_ACCEPTANCE_REASSIGNMENT_STATUSES:
+        if patent.application_status in PRE_ASSIGNMENT_STATUSES:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "No agent has accepted this application yet — use /assign or /auto-assign instead",
+            )
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Applications in '{patent.application_status}' status can't be reassigned",
+        )
+
+    if patent.assigned_patent_agent_id == payload.patent_agent_id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "That agent is already assigned to this application"
+        )
+
+    agent = await _load_approved_agent_or_400(db, payload.patent_agent_id)
+
+    await perform_reassignment(
+        db,
+        patent=patent,
+        new_agent_id=agent.id,
+        reassigned_by_user_id=user.id,
+        reason=payload.reason,
+    )
     await db.commit()
     await db.refresh(patent)
     return patent

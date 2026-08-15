@@ -21,6 +21,7 @@ export function TemplatesPanel() {
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [uploadWarning, setUploadWarning] = useState<TemplateOut | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function loadDocumentTypes() {
@@ -51,6 +52,7 @@ export function TemplatesPanel() {
 
   useEffect(() => {
     if (selectedType) loadTemplates(selectedType);
+    setUploadWarning(null);
   }, [selectedType]);
 
   async function handleUpload(file: File) {
@@ -61,11 +63,22 @@ export function TemplatesPanel() {
     }
     setUploading(true);
     setError(null);
+    setUploadWarning(null);
     try {
-      await apiUpload<TemplateOut>("/api/templates", file, "upload", {
+      const uploaded = await apiUpload<TemplateOut>("/api/templates", file, "upload", {
         document_type: selectedType,
         activate: true,
       });
+      // Closes open item #31 — surface placeholder validation results
+      // right away, since a typo'd/unsupported placeholder or a template
+      // docxtpl can't parse would otherwise only be discovered the hard
+      // way, silently, at generation time.
+      if (
+        uploaded.template_parse_error ||
+        (uploaded.unknown_placeholders && uploaded.unknown_placeholders.length > 0)
+      ) {
+        setUploadWarning(uploaded);
+      }
       await loadTemplates(selectedType);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
@@ -106,6 +119,36 @@ export function TemplatesPanel() {
   return (
     <div className="space-y-4">
       {error && <p className="text-sm text-red-600">{error}</p>}
+
+      {uploadWarning && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800">
+          <div className="mb-1 flex items-center justify-between">
+            <p className="font-medium">
+              Uploaded "{uploadWarning.original_file_name}" — but it's worth a second look:
+            </p>
+            <button
+              onClick={() => setUploadWarning(null)}
+              className="text-amber-600 hover:underline"
+            >
+              Dismiss
+            </button>
+          </div>
+          {uploadWarning.template_parse_error && (
+            <p className="mb-1">⚠️ {uploadWarning.template_parse_error}</p>
+          )}
+          {uploadWarning.unknown_placeholders && uploadWarning.unknown_placeholders.length > 0 && (
+            <p className="mb-1">
+              ⚠️ Found placeholder{uploadWarning.unknown_placeholders.length > 1 ? "s" : ""} this
+              app doesn't recognize:{" "}
+              <code>
+                {uploadWarning.unknown_placeholders.map((p) => `{{ ${p} }}`).join(", ")}
+              </code>
+              . They'll render blank rather than being filled in — check for typos against the
+              supported placeholder list below.
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="rounded-lg border border-slate-200 bg-white p-4">
         <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">

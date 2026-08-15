@@ -136,6 +136,67 @@ async def _active_template(db: AsyncSession, *, document_type: str) -> Template 
     return result.scalar_one_or_none()
 
 
+# The full set of Jinja placeholders _merge_with_template() actually fills
+# in below. Closes open item #31 ("in-UI placeholder validation for
+# Templates"): an admin uploading a .docx with a misspelled or unsupported
+# placeholder (or one that isn't valid Jinja-in-DOCX at all) would
+# otherwise only find out the hard way — build_docx_bytes() silently
+# falls back to the plain layout on any merge failure, by design, so a
+# bad template could sit "Active" indefinitely with document generation
+# quietly never actually using it. validate_template_placeholders() lets
+# the upload endpoint surface that immediately instead.
+KNOWN_TEMPLATE_PLACEHOLDERS: frozenset[str] = frozenset({"TITLE", "WATERMARK_TEXT", *SECTION_TYPES})
+
+
+class TemplateValidationResult:
+    """Non-fatal validation info about a just-uploaded template, returned
+    to the client alongside the created Template row. Never blocks the
+    upload — matching build_docx_bytes()'s own "a bad template must never
+    take document generation down" stance, this only informs, it never
+    rejects. A parse_error here isn't a promise the template can't be
+    used, only a warning that the same style of doc failed to parse
+    during a get_undeclared_template_variables() pass; the real merge
+    happens independently at generation time."""
+
+    def __init__(
+        self,
+        *,
+        unknown_placeholders: list[str],
+        unused_known_placeholders: list[str],
+        parse_error: str | None,
+    ):
+        self.unknown_placeholders = unknown_placeholders
+        self.unused_known_placeholders = unused_known_placeholders
+        self.parse_error = parse_error
+
+
+def validate_template_placeholders(docx_bytes: bytes) -> TemplateValidationResult:
+    """Parses the uploaded .docx with the same docxtpl machinery
+    _merge_with_template() uses, and diffs whatever Jinja variables it
+    finds against KNOWN_TEMPLATE_PLACEHOLDERS. Deliberately doesn't share
+    a code path with _merge_with_template() itself — this only inspects
+    the template's variables, it never renders/fills them, so it works
+    the same regardless of which patent (if any) the admin has in mind
+    when uploading."""
+    try:
+        tpl = DocxTemplate(io.BytesIO(docx_bytes))
+        used = tpl.get_undeclared_template_variables()
+    except Exception as exc:  # noqa: BLE001 — deliberately broad, mirrors build_docx_bytes()
+        return TemplateValidationResult(
+            unknown_placeholders=[],
+            unused_known_placeholders=[],
+            parse_error=(
+                "Couldn't read this file as a Jinja-in-DOCX template "
+                f"({exc}). It will fall back to the plain layout at generation time."
+            ),
+        )
+    return TemplateValidationResult(
+        unknown_placeholders=sorted(used - KNOWN_TEMPLATE_PLACEHOLDERS),
+        unused_known_placeholders=sorted(KNOWN_TEMPLATE_PLACEHOLDERS - used),
+        parse_error=None,
+    )
+
+
 def _merge_with_template(
     *,
     template_bytes: bytes,
@@ -365,7 +426,7 @@ async def run_generation_job(
         )
         db.add(doc_version)
 
-        document.template_id = template.id if template else document.template_id
+        document.template_id = active_template.id if active_template else document.template_id
         document.output_format = output_format
         document.watermark_status = "DRAFT" if watermark else None
         document.generated_by = triggered_by

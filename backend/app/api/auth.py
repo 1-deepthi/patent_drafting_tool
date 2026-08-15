@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_active_user, get_current_user, require_role
 from app.core.config import settings
+from app.core.rate_limit import limiter
 from app.core.database import get_db
 from app.core.oauth import oauth
 from app.core.security import create_access_token
@@ -52,6 +53,7 @@ router = APIRouter()
 # --------------------------------------------------------------------------
 
 @router.get("/google/login")
+@limiter.limit(settings.rate_limit_auth)
 async def google_login(request: Request):
     redirect_uri = settings.google_redirect_uri
     return await oauth.google.authorize_redirect(request, redirect_uri)
@@ -110,7 +112,10 @@ def _redirect_to_frontend(*, token: str | None = None, error: str | None = None,
 # --------------------------------------------------------------------------
 
 @router.post("/dev-login", response_model=TokenResponse)
-async def dev_login(payload: DevLoginRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit(settings.rate_limit_auth)
+async def dev_login(
+    request: Request, payload: DevLoginRequest, db: AsyncSession = Depends(get_db)
+):
     if not (settings.environment == "development" and settings.dev_login_enabled):
         # 404, not 403 — don't confirm this endpoint exists outside dev.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")

@@ -14,6 +14,7 @@ export function DashboardShell({
   const { user, logout } = useAuth();
   const homeRole = user?.roles[0];
   const calendarPath = homeRole ? `${ROLE_HOME[homeRole]}/calendar` : "/calendar";
+  const reportsPath = homeRole ? `${ROLE_HOME[homeRole]}/reports` : "/reports";
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -26,6 +27,12 @@ export function DashboardShell({
             </p>
           </div>
           <div className="flex items-center gap-3">
+            <Link
+              to={reportsPath}
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Reports
+            </Link>
             <Link
               to={calendarPath}
               className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"

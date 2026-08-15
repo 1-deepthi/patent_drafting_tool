@@ -1,7 +1,17 @@
 """Basic Information step (workflow item 4): Applicants and Inventors as
 structured records under a Patent Application — NOT free text, NOT Teams.
 Same visibility rules as the parent patent (via _require_visible); editing
-is restricted to Draft applications, same as title edits in patents.py.
+is allowed through any PRE_ASSIGNMENT_STATUSES status (see
+app/services/patent_service.py) — i.e. up until an agent has *accepted*
+the assignment, not just up until Draft.
+
+This intentionally covers more than "Draft" because assign/auto-assign can
+move a patent to "Awaiting Patent Agent Acceptance" directly from "Draft"
+(that's a tested, intentional design — see
+test_can_assign_agent_even_before_submission_but_not_after_acceptance).
+If this gate stayed Draft-only, an application assigned before submission
+would have its Basic Information locked forever, since nothing ever moves
+it back to Draft. See Project_Handover_v14.md §12.3.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -29,6 +39,7 @@ from app.services.legal_party_service import (
     reorder_applicants,
     reorder_inventors,
 )
+from app.services.patent_service import PRE_ASSIGNMENT_STATUSES
 
 router = APIRouter()
 
@@ -36,10 +47,11 @@ router = APIRouter()
 async def _require_draft_editable(db: AsyncSession, user: User, patent_id: int):
     patent = await _get_patent_or_404(db, patent_id)
     await _require_editable_by(db, user, patent)
-    if patent.application_status != "Draft":
+    if patent.application_status not in PRE_ASSIGNMENT_STATUSES:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "Basic Information can only be edited while the application is in Draft",
+            "Basic Information can only be edited before a Patent Agent has "
+            "accepted the assignment",
         )
     return patent
 

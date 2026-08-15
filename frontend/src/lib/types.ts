@@ -397,6 +397,7 @@ export type NotificationType =
   | "Assigned"
   | "Accepted"
   | "Rejected"
+  | "Reassigned"
   | "ChangeRequested"
   | "DraftGenerated"
   | "FilingRecorded"
@@ -422,6 +423,7 @@ export const NOTIFICATION_TEXT: Record<string, (title: string) => string> = {
   Assigned: (t) => `You were assigned to "${t}".`,
   Accepted: (t) => `Your Patent Agent accepted "${t}".`,
   Rejected: (t) => `Your Patent Agent declined "${t}".`,
+  Reassigned: (t) => `You were reassigned off "${t}" by an admin.`,
   ChangeRequested: (t) => `Changes were requested on "${t}".`,
   DraftGenerated: (t) => `A new draft was generated for "${t}".`,
   FilingRecorded: (t) => `A filing was recorded for "${t}".`,
@@ -460,4 +462,70 @@ export interface TemplateOut {
   is_active: boolean;
   edited_by: number | null;
   edited_by_name: string | null;
+  // Only populated on the upload response itself (open item #31) — null
+  // on every other read (list, activate).
+  unknown_placeholders: string[] | null;
+  unused_known_placeholders: string[] | null;
+  template_parse_error: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Reports & Dashboards (NEW — Phase 9)
+// ---------------------------------------------------------------------------
+
+export interface StatusCount {
+  status: string;
+  count: number;
+}
+
+export interface RecentActivityItem {
+  id: number;
+  user_id: number | null;
+  event_type: string | null;
+  entity_type: string | null;
+  entity_id: number | null;
+  created_at: string;
+}
+
+export interface DashboardSummary {
+  total_visible_patents: number;
+  status_counts: StatusCount[];
+  action_required_count: number;
+  action_required_label: string;
+  unread_notifications: number;
+  upcoming_events_count: number;
+  // Admin/Super Admin only — null for every other role.
+  recent_activity: RecentActivityItem[] | null;
+}
+
+export interface ReportTypeOut {
+  report_type: string;
+  label: string;
+  description: string;
+  can_download: boolean;
+}
+
+export interface ReportOut {
+  report_type: string;
+  label: string;
+  generated_at: string;
+  row_count: number;
+  rows: Record<string, string | number | null>[];
+}
+
+export interface ReportPermissionGrant {
+  role_id: number;
+  report_type: string;
+}
+
+export interface ReportTypeCatalogOut {
+  report_type: string;
+  label: string;
+  description: string;
+}
+
+export interface ReportPermissionMatrixResponse {
+  roles: RoleOut[];
+  report_types: ReportTypeCatalogOut[];
+  grants: ReportPermissionGrant[];
 }

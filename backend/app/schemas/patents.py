@@ -41,6 +41,15 @@ class RejectAssignmentRequest(BaseModel):
     reason: str | None = None
 
 
+class ReassignAgentRequest(BaseModel):
+    # Post-acceptance override, Admin/Super Admin only (see
+    # PATCH.../reassign). A reason is mandatory here — unlike the initial
+    # assignment, this pulls a patent away from an agent who already
+    # accepted it, so it needs an audit trail explaining why.
+    patent_agent_id: int
+    reason: str = Field(min_length=1, max_length=2000)
+
+
 class AvailableAgentOut(BaseModel):
     id: int
     full_name: str

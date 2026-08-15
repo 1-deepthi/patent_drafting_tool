@@ -10,8 +10,11 @@ import PatentWorkflowPage from "./pages/PatentWorkflowPage";
 import AgentDashboard from "./pages/AgentDashboard";
 import DraftWorkspacePage from "./pages/DraftWorkspacePage";
 import AdminDashboard from "./pages/AdminDashboard";
+import AdminPatentsPage from "./pages/AdminPatentsPage";
+import AdminPatentDetailPage from "./pages/AdminPatentDetailPage";
 import SuperAdminDashboard from "./pages/SuperAdminDashboard";
 import CalendarPage from "./pages/CalendarPage";
+import ReportsPage from "./pages/ReportsPage";
 
 export default function App() {
   return (
@@ -29,6 +32,14 @@ export default function App() {
             element={
               <ProtectedRoute requireRole={["INNOVATOR"]}>
                 <CalendarPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/innovator/reports"
+            element={
+              <ProtectedRoute requireRole={["INNOVATOR"]}>
+                <ReportsPage />
               </ProtectedRoute>
             }
           />
@@ -57,6 +68,14 @@ export default function App() {
             }
           />
           <Route
+            path="/agent/reports"
+            element={
+              <ProtectedRoute requireRole={["PATENT_AGENT"]}>
+                <ReportsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/agent/patents/:id/draft"
             element={
               <ProtectedRoute requireRole={["PATENT_AGENT"]}>
@@ -81,6 +100,33 @@ export default function App() {
             }
           />
           <Route
+            path="/admin/reports"
+            element={
+              <ProtectedRoute requireRole={["ADMIN"]}>
+                <ReportsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/patents/:id"
+            element={
+              // Shared with Super Admin — closes open item #38. Backend's
+              // visible_patents_query/is_admin() already treat ADMIN and
+              // SUPER_ADMIN identically for patent visibility.
+              <ProtectedRoute requireRole={["ADMIN", "SUPER_ADMIN"]}>
+                <AdminPatentDetailPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/patents"
+            element={
+              <ProtectedRoute requireRole={["ADMIN", "SUPER_ADMIN"]}>
+                <AdminPatentsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/admin/*"
             element={
               <ProtectedRoute requireRole={["ADMIN"]}>
@@ -93,6 +139,14 @@ export default function App() {
             element={
               <ProtectedRoute requireRole={["SUPER_ADMIN"]}>
                 <CalendarPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/super-admin/reports"
+            element={
+              <ProtectedRoute requireRole={["SUPER_ADMIN"]}>
+                <ReportsPage />
               </ProtectedRoute>
             }
           />
