@@ -9,6 +9,7 @@
 [![Contributing](https://img.shields.io/badge/Contributing-Guide-green.svg)](./CONTRIBUTING.md)
 [![Security](https://img.shields.io/badge/Security-Policy-red.svg)](./SECURITY.md)
 [![Accessibility](https://img.shields.io/badge/Accessibility-WCAG%202.2%20AA-purple.svg)](./ACCESSIBILITY.md)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 ---
 
@@ -411,7 +412,11 @@ Production checklist (enforced by `app/core/startup_checks.py` on the legacy pat
 
 | Document | Purpose |
 |---|---|
-| [`docs/GETTING_STARTED.md`](./docs/GETTING_STARTED.md) | First-run tutorial, Firebase setup, login, troubleshooting |
+| [`docs/GETTING_STARTED.md`](./docs/GETTING_STARTED.md) | First-run tutorial, Firebase setup, login |
+| [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md) | Symptom-first fixes (ports, auth, Docker, CI) |
+| [`docs/FAQ.md`](./docs/FAQ.md) | Short answers to repeated questions |
+| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | System diagram, auth model, Firestore collections, state machine, AI providers |
+| [`docs/decisions/`](./docs/decisions/) | Architecture Decision Records (ADR-001 Firebase runtime, ADR-002 roles, ADR-003 single instance, ADR-004 stub-first AI) |
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | System diagram, auth model, Firestore collections, state machine, AI providers |
 | [`docs/API_OVERVIEW.md`](./docs/API_OVERVIEW.md) | Endpoint catalog with methods, auth, and payloads |
 | [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md) | Dev workflow, code style, scripts, common errors |
@@ -424,6 +429,8 @@ Production checklist (enforced by `app/core/startup_checks.py` on the legacy pat
 | [`SECURITY.md`](./SECURITY.md) | Vulnerability reporting + hardening |
 | [`ACCESSIBILITY.md`](./ACCESSIBILITY.md) | Accessibility commitments + gaps |
 | [`SUPPORT.md`](./SUPPORT.md) | Getting help |
+| [`AGENTS.md`](./AGENTS.md) | Agent-oriented repo instructions (commands, conventions, boundaries) |
+| [`CITATION.cff`](./CITATION.cff) | How to cite this project |
 
 ---
 

@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use patent_drafting_tool, please cite it as below."
+title: "patent_drafting_tool: collaborative platform for drafting and managing patent applications"
+type: software
+authors:
+  - name: "patent_drafting_tool contributors"
+repository-code: "https://github.com/auraflaa/patent_drafting_tool"
+license: Apache-2.0
+keywords:
+  - patents
+  - patent-drafting
+  - fastapi
+  - react
+  - firebase
+  - firestore
+  - open-source

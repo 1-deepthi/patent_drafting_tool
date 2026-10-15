@@ -3,7 +3,7 @@
 Phase 10 output. Written against the stack referenced elsewhere in this
 repo (`backend/.env.example`'s "Neon in production" comment, and the
 Koyeb-shaped assumptions in `app/services/storage/local_provider.py` and
-`GETTING_STARTED.md`): **Koyeb** for both containers, **Neon** for
+`docs/GETTING_STARTED.md`): **Koyeb** for both containers, **Neon** for
 Postgres, **Cloudflare R2** for file storage. The steps below generalize
 to any Dockerfile-based PaaS (Render, Fly.io, Railway, ECS, ...) — swap
 the Koyeb-specific dashboard steps for your platform's equivalent.
