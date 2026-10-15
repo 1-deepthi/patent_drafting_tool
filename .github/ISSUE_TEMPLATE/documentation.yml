@@ -1,0 +1,40 @@
+name: Documentation
+description: Report missing, unclear, or wrong docs. Docs PRs are always welcome.
+title: "docs: <short summary>"
+labels: ["documentation"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for improving the docs. Point us at the exact page and quote.
+  - type: input
+    id: page
+    attributes:
+      label: Page / file
+      description: Which document is affected?
+      placeholder: docs/GETTING_STARTED.md §4 — backend .env
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: What is wrong or missing?
+      description: Quote the confusing text and explain what a new reader needs.
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested fix
+      description: Proposed wording, steps, or example. Even a rough draft helps.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked the page on the latest `main`.
+          required: true
+        - label: I am willing to open a docs PR (optional).
+          required: false

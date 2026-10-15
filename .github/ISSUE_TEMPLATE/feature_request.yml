@@ -1,0 +1,78 @@
+name: Feature request
+description: Propose a new capability or improvement. Describe the problem first.
+title: "feat: <short summary>"
+labels: ["enhancement"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests start from a user problem, not a solution. Fill in the problem first — proposals without it are closed as `needs-info`.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Who is affected, when does it hurt, and what happens today?
+      placeholder: |
+        As an INNOVATOR, filling the questionnaire takes too long because...
+        Today I have to...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change? Include UX sketch or API shape if relevant.
+      placeholder: |
+        Add autosave + version restore to the questionnaire tab...
+        POST /api/patents/{id}/questionnaire/autosave {answers}
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you consider, and why is this proposal better?
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Backend
+        - Frontend
+        - Auth / RBAC
+        - Patent workflow
+        - Questionnaire
+        - Draft generation / AI
+        - Documents / files
+        - Calendar / notifications
+        - Templates
+        - Reports
+        - Docker / Compose
+        - Docs
+    validations:
+      required: true
+  - type: textarea
+    id: a11y-security
+    attributes:
+      label: Accessibility and security impact
+      description: Keyboard/screen-reader needs, auth guard changes, data sensitivity.
+      placeholder: |
+        A11y: new dialog must trap focus and announce errors.
+        Security: requires require_roles(PATENT_AGENT); no new PII stored.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and discussions for duplicates.
+          required: true
+        - label: This is a single, scoped request (not a bundle of features).
+          required: true
+        - label: I am willing to help implement or test this (optional but appreciated).
+          required: false
