@@ -124,3 +124,12 @@ Do not build new features on it. Do not deploy it. Removal requires an approved 
 - **Config**: `app/core/config.py` (`pydantic-settings`, `.env`, `extra='ignore'`) — Firebase + app + upload + AI settings only.
 - **Observability**: global 500 handler, request logging via uvicorn/gunicorn access logs; structured Loguru JSON and `RequestID`/`SecurityHeaders` middleware exist in legacy `core/` but are not wired in active `main.py` (gap).
 - **Scaling**: single-instance assumption — in-memory rate limiting and boot-time migrations race with multiple replicas. See `DEPLOYMENT.md` "A note on scale".
+
+## 11. Decision records
+
+The reasoning behind the significant choices above is recorded in [`decisions/`](./decisions/):
+
+- [ADR-001](./decisions/ADR-001-firebase-active-runtime.md) — Firebase-native backend as the active runtime
+- [ADR-002](./decisions/ADR-002-role-codes-array.md) — Roles as a `role_codes` array on the user document
+- [ADR-003](./decisions/ADR-003-single-instance.md) — Single backend instance
+- [ADR-004](./decisions/ADR-004-stub-first-ai.md) — Stub-first AI drafting with optional Gemini
