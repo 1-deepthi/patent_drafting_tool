@@ -1,5 +1,5 @@
 # --- builder: install Python deps into an isolated venv -------------------
-FROM python:3.13-slim AS builder
+FROM python:3.14-slim AS builder
 
 WORKDIR /app
 RUN python -m venv /opt/venv
@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
 # --- runtime: slim image, no build toolchain, non-root user ----------------
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 # LibreOffice is a hard requirement for real PDF conversion (see
 # app/services/document_service.py) — installed only in this stage, not the
