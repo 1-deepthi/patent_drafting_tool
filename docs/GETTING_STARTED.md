@@ -1,0 +1,133 @@
+# Getting started
+
+Step-by-step first run for **patent_drafting_tool**, from zero to logged-in admin.
+
+---
+
+## 1. What you need
+
+- Python 3.11+ (3.13 recommended), Node 20.x, Git, and (optionally) Docker + Compose.
+- A Firebase project with **Firestore**, **Authentication**, and (for uploads) **Cloud Storage**.
+- Windows PowerShell commands are shown; macOS/Linux users translate `Copy-Item` → `cp` and venv activation to `source venv/bin/activate`.
+
+## 2. Clone
+
+```powershell
+git clone https://github.com/auraflaa/patent_drafting_tool.git
+cd patent_drafting_tool
+```
+
+## 3. Create the Firebase project
+
+Follow `backend/README.md` §2 (summary here — the backend README is authoritative):
+
+1. Go to https://console.firebase.google.com/ → create or select a project. Note the **Project ID**.
+2. **Build → Firestore Database** → Create database. Choose the region carefully (hard to change later).
+3. **Build → Authentication → Sign-in method** → enable the providers your client will use (Google at minimum).
+4. **Build → Storage** → enable a bucket if uploads/templates are needed. Note the bucket name.
+5. **Project settings → Service accounts → Generate new private key** → save the JSON as `backend/secrets/firebase-service-account.json` (create the `secrets/` folder; it is git-ignored).
+6. Decide your bootstrap admin email — an address you control. Never use a shared address.
+
+## 4. Configure the backend
+
+```powershell
+cd backend
+py -3.13 -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+Edit `backend/.env`:
+
+```ini
+FIREBASE_PROJECT_ID=your-firebase-project-id
+FIREBASE_SERVICE_ACCOUNT_PATH=secrets/firebase-service-account.json
+FIREBASE_STORAGE_BUCKET=your-firebase-storage-bucket
+BOOTSTRAP_ADMIN_EMAIL=you@example.com
+ENVIRONMENT=development
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+ALLOWED_HOSTS=localhost,127.0.0.1
+```
+
+Start it:
+
+```powershell
+python -m uvicorn app.main:app --reload --port 8000
+```
+
+Verify:
+
+- http://127.0.0.1:8000/docs — Swagger UI
+- http://127.0.0.1:8000/health — `{"status":"ok","firebase":"connected",...}` once credentials are valid; `503 degraded` before that is **expected**.
+
+## 5. Configure the frontend
+
+New terminal:
+
+```powershell
+cd frontend
+npm ci
+Copy-Item .env.example .env
+```
+
+Edit `frontend/.env`:
+
+```ini
+VITE_API_URL=http://localhost:8000
+VITE_DEV_LOGIN_ENABLED=true
+```
+
+Start it:
+
+```powershell
+npm run dev
+```
+
+Open http://localhost:5173.
+
+## 6. First admin login
+
+1. Confirm `BOOTSTRAP_ADMIN_EMAIL` in `backend/.env` is your address.
+2. Sign in on the frontend with that address via Firebase Authentication.
+3. The backend auto-creates your `users/{uid}` profile as `SUPER_ADMIN` + `approved` (see `app/core/security.py` bootstrap logic).
+4. Go to `/super-admin` → **Pending Approvals** to approve subsequent users.
+5. Remove or change `BOOTSTRAP_ADMIN_EMAIL` after initial setup per your deployment policy.
+
+## 7. Happy-path smoke test (10 minutes)
+
+As **Innovator**:
+
+1. `/innovator` → create a team → create a patent in it.
+2. Open the patent → **Basic Info** tab → add an applicant + inventor.
+3. **Questionnaire** tab → fill required fields → save → **Submit** the patent.
+
+As **Admin/Super Admin**:
+
+4. `/super-admin` or `/admin/patents` → open the submitted patent → **Assign** (or **Auto-assign**) an approved `PATENT_AGENT`.
+
+As **Patent Agent**:
+
+5. `/agent` → accept the assignment.
+6. `/agent/patents/:id/draft` → **Generate** a `summary` section → confirm a version appears.
+7. Generate a DOCX document → confirm download works.
+
+As **Admin**:
+
+8. `/admin` → upload a `.docx` template → activate it.
+9. `/innovator/reports` or `/admin/reports` → confirm dashboard counts move and JSON export downloads.
+
+## 8. Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `/health` → `503` | Service-account path wrong, project ID mismatch, or no network to Firebase. Check `FIREBASE_*` values and `secrets/` filename. |
+| `401` on API calls | No `Authorization: Bearer <Firebase ID token>` header. Re-login; inspect `src/lib/api.ts` token flow. |
+| `403 awaiting approval` | Account is `pending`. Approve via Super Admin dashboard. |
+| CORS errors in browser console | `CORS_ORIGINS` must include the exact frontend origin (`http://localhost:5173`). |
+| `TrustedHost` 400s | `ALLOWED_HOSTS` must include `localhost,127.0.0.1`. |
+| Uploads fail | Bucket unset or `MAX_UPLOAD_SIZE_BYTES` / blocked-extension rejection. Check backend logs (non-prod includes reason). |
+| Draft returns placeholder | Expected without `AI_PROVIDER=gemini` + `GEMINI_API_KEY`. Set both to enable real generation. |
+
+Still stuck? See [`SUPPORT.md`](../SUPPORT.md) and [`DEVELOPMENT.md`](./DEVELOPMENT.md).
