@@ -15,7 +15,11 @@ Stages:
 2. **runtime**: installs `libreoffice` + `ca-certificates` (required for DOCX→PDF via headless LibreOffice — the main size cost), creates non-root `appuser` (uid 1000), copies venv + source, `chmod +x docker-entrypoint.sh`, `USER appuser`.
 
 ```dockerfile
-ENTRYPOINT ["./docker-entrypoint.sh"]  # legacy: alembic upgrade head, then exec CMD
+# Entrypoint runs `alembic upgrade head` only when alembic is installed AND
+# DATABASE_URL is set (legacy SQL path); on the active Firebase runtime it
+# skips migrations and boots straight into serving. Gunicorn comes from
+# requirements.txt — the image cannot serve without it.
+ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["gunicorn", "app.main:app",
      "--worker-class", "uvicorn.workers.UvicornWorker",
      "--workers", "4",

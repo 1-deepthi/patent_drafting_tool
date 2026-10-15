@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Docker workflow used the non-existent `docker/build-action` (failed at "Set up job") — corrected to `docker/build-push-action`; action existence now verified before merging workflow changes.
+- Backend image could never boot on the Firebase runtime: the entrypoint unconditionally ran `alembic upgrade head` (binary absent) and `requirements.txt` lacked the `gunicorn` the Dockerfile CMD needs. Entrypoint now migrates only when alembic + `DATABASE_URL` exist; `gunicorn` pinned in requirements.
 
 ### Changed
 
