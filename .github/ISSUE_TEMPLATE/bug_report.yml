@@ -1,0 +1,94 @@
+name: Bug report
+description: Something is broken. Help us reproduce and fix it.
+title: "fix: <short summary>"
+labels: ["bug"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Complete every field — incomplete reports are closed as `needs-info`.
+        For vulnerabilities, do NOT use this form — see `SECURITY.md`.
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One-sentence description of the bug.
+      placeholder: Patent submit returns 403 for the owning innovator
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, starting from login (include role used).
+      placeholder: |
+        1. Log in as INNOVATOR
+        2. Open /innovator/patents/<id>
+        3. Click Submit
+        4. See 403
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected vs actual
+      description: What should happen vs what happens instead.
+      placeholder: |
+        Expected: status becomes submitted.
+        Actual: 403 {"detail": "..."}.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Backend
+        - Frontend
+        - Auth / RBAC
+        - Patent workflow
+        - Questionnaire
+        - Draft generation / AI
+        - Documents / files
+        - Calendar / notifications
+        - Templates
+        - Reports
+        - Docker / Compose
+        - Docs
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Commit SHA, OS, Python/Node versions, Docker or local, Firebase emulator or real project.
+      placeholder: |
+        Commit: abc1234
+        OS: Windows 11
+        Python 3.13 / Node 20.18
+        Local backend + frontend, real Firebase project
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: Paste redacted backend logs, browser console errors, or API responses. Remove tokens and secrets.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and discussions for duplicates.
+          required: true
+        - label: I redacted all secrets, tokens, and service-account content.
+          required: true
+        - label: I can reproduce this on the latest `main`.
+          required: false
