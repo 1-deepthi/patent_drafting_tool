@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { DashboardShell } from "../components/DashboardShell";
 import { StatusBadge } from "../components/StatusBadge";
+import { LoadingState } from "../components/LoadingState";
+import { EmptyState } from "../components/EmptyState";
 import { apiFetch } from "../lib/api";
 import type { PatentOut } from "../lib/types";
 
@@ -48,9 +50,9 @@ export default function AgentDashboard() {
 
       <div>
         <h2 className="mb-3 text-sm font-semibold text-slate-700">Your applications</h2>
-        {rest === null && <p className="text-sm text-slate-500">Loading…</p>}
+        {rest === null && <LoadingState />}
         {rest?.length === 0 && (
-          <p className="text-sm text-slate-500">Nothing assigned to you yet.</p>
+          <EmptyState title="Nothing assigned to you yet." />
         )}
         <div className="space-y-2">
           {rest?.map((p) => (

@@ -8,6 +8,8 @@
 // was written.
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "../lib/api";
+import { LoadingState } from "./LoadingState";
+import { EmptyState } from "./EmptyState";
 import {
   APPLICANT_TYPES,
   INVENTION_TYPES,
@@ -209,11 +211,9 @@ function ApplicantsPanel({
       </h3>
       {error && <p className="mb-2 text-xs text-red-600">{error}</p>}
 
-      {applicants === null && (
-        <p className="text-xs text-slate-400">Loading…</p>
-      )}
+      {applicants === null && <LoadingState compact />}
       {applicants?.length === 0 && (
-        <p className="mb-3 text-xs text-slate-400">No applicants yet.</p>
+        <EmptyState title="No applicants yet." />
       )}
 
       <div className="space-y-2">
@@ -497,9 +497,9 @@ function InventorsPanel({
       <h3 className="mb-3 text-sm font-semibold text-slate-700">Inventors</h3>
       {error && <p className="mb-2 text-xs text-red-600">{error}</p>}
 
-      {inventors === null && <p className="text-xs text-slate-400">Loading…</p>}
+      {inventors === null && <LoadingState compact />}
       {inventors?.length === 0 && (
-        <p className="mb-3 text-xs text-slate-400">No inventors yet.</p>
+        <EmptyState title="No inventors yet." />
       )}
 
       <div className="space-y-2">
@@ -749,7 +749,11 @@ export function QuestionnaireTab({
   }, [q]);
 
   if (!q) {
-    return <p className="text-sm text-slate-500">{error ?? "Loading…"}</p>;
+    return error ? (
+      <p className="text-sm text-red-600">{error}</p>
+    ) : (
+      <LoadingState />
+    );
   }
 
   const isCompleted = q.questionnaire_status === "Completed";
@@ -956,13 +960,9 @@ export function QuestionnaireTab({
         </button>
         {showVersions && (
           <div className="mt-3 space-y-2">
-            {versions === null && (
-              <p className="text-xs text-slate-400">Loading…</p>
-            )}
+            {versions === null && <LoadingState compact />}
             {versions?.length === 0 && (
-              <p className="text-xs text-slate-400">
-                No submitted versions yet.
-              </p>
+              <EmptyState title="No submitted versions yet." />
             )}
             {versions?.map((v) => (
               <div

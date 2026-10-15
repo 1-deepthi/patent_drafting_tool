@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { DashboardShell } from "../components/DashboardShell";
 import { StatusBadge } from "../components/StatusBadge";
+import { LoadingState } from "../components/LoadingState";
+import { EmptyState } from "../components/EmptyState";
 import { apiFetch } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { ROLE_HOME, type PatentOut } from "../lib/types";
@@ -75,9 +77,9 @@ export default function AdminPatentsPage() {
       </div>
 
       {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
-      {filtered === null && !error && <p className="text-sm text-slate-500">Loading…</p>}
+      {filtered === null && !error && <LoadingState />}
       {filtered?.length === 0 && (
-        <p className="text-sm text-slate-500">No patent applications match this filter.</p>
+        <EmptyState title="No patent applications match this filter." />
       )}
 
       <div className="space-y-2">

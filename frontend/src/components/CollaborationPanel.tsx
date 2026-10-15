@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { apiDownload, apiFetch, apiUpload } from "../lib/api";
+import { LoadingState } from "./LoadingState";
+import { EmptyState } from "./EmptyState";
 import {
   CALENDAR_EVENT_TYPES,
   type CalendarEventCreate,
@@ -121,9 +123,9 @@ function CommentsSection({ patentId }: { patentId: number }) {
       {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
 
       <div className="mb-4 max-h-80 space-y-3 overflow-y-auto">
-        {comments === null && <p className="text-sm text-slate-500">Loading…</p>}
+        {comments === null && <LoadingState />}
         {comments?.length === 0 && (
-          <p className="text-sm text-slate-400">No comments yet — start the discussion below.</p>
+          <EmptyState title="No comments yet." message="Start the discussion below." />
         )}
         {comments?.map((c) => (
           <div key={c.id} className="rounded-md bg-slate-50 px-3 py-2">
@@ -231,9 +233,9 @@ function FilesSection({ patentId }: { patentId: number }) {
       {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
 
       <div className="mb-4 space-y-2">
-        {files === null && <p className="text-sm text-slate-500">Loading…</p>}
+        {files === null && <LoadingState />}
         {files?.length === 0 && (
-          <p className="text-sm text-slate-400">No files uploaded yet.</p>
+          <EmptyState title="No files uploaded yet." />
         )}
         {files?.map((f) => (
           <div
@@ -350,9 +352,9 @@ function CalendarSection({ patentId, canManage }: { patentId: number; canManage:
       {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
 
       <div className="mb-4 space-y-2">
-        {events === null && <p className="text-sm text-slate-500">Loading…</p>}
+        {events === null && <LoadingState />}
         {events?.length === 0 && (
-          <p className="text-sm text-slate-400">No calendar events yet.</p>
+          <EmptyState title="No calendar events yet." />
         )}
         {events?.map((ev) => (
           <div

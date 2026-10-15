@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { DashboardShell } from "../components/DashboardShell";
 import { StatusBadge } from "../components/StatusBadge";
+import { LoadingState } from "../components/LoadingState";
+import { EmptyState } from "../components/EmptyState";
 import { useAuth } from "../context/AuthContext";
 import { apiDownload, apiFetch, ApiError } from "../lib/api";
 import type { DashboardSummary, ReportOut, ReportTypeOut } from "../lib/types";
@@ -50,7 +52,7 @@ function DashboardSummaryCards() {
   }, []);
 
   if (error) return <p className="text-sm text-red-600">{error}</p>;
-  if (!summary) return <p className="text-sm text-slate-500">Loading…</p>;
+  if (!summary) return <LoadingState />;
 
   return (
     <div className="space-y-4">
@@ -183,7 +185,7 @@ function ReportBrowser() {
     }
   }
 
-  if (!types) return <p className="text-sm text-slate-500">Loading report catalog…</p>;
+  if (!types) return <LoadingState label="Loading report catalog…" />;
 
   const selectedMeta = types.find((t) => t.report_type === selected);
   const columns = report && report.rows.length > 0 ? Object.keys(report.rows[0]) : [];
@@ -226,9 +228,9 @@ function ReportBrowser() {
       {error && <p className="mb-3 text-xs text-red-600">{error}</p>}
 
       {!report ? (
-        <p className="text-sm text-slate-500">Loading…</p>
+        <LoadingState />
       ) : report.rows.length === 0 ? (
-        <p className="text-sm text-slate-400">No data yet.</p>
+        <EmptyState title="No data yet." />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">

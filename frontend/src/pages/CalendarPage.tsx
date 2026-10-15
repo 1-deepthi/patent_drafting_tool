@@ -4,6 +4,8 @@ import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import type { EventClickArg, EventInput } from "@fullcalendar/core";
 import { DashboardShell } from "../components/DashboardShell";
+import { LoadingState } from "../components/LoadingState";
+import { EmptyState } from "../components/EmptyState";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
 import { ROLE_HOME, type CalendarEventOut } from "../lib/types";
@@ -76,13 +78,13 @@ export default function CalendarPage() {
   return (
     <DashboardShell title="Calendar">
       {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
-      {events === null && !error && <p className="text-sm text-slate-500">Loading…</p>}
+      {events === null && !error && <LoadingState />}
 
       {events !== null && events.length === 0 && (
-        <p className="text-sm text-slate-400">
-          No calendar events yet. Events are added by a Patent Agent or Admin on each
-          application's Calendar tab.
-        </p>
+        <EmptyState
+          title="No calendar events yet."
+          message="Events are added by a Patent Agent or Admin on each application's Calendar tab."
+        />
       )}
 
       {events !== null && events.length > 0 && (
