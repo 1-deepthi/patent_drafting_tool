@@ -35,6 +35,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# --- Local reference clones (never commit; see CONTRIBUTING.md) ---
+ref-repos/
+
 # --- OS / editors ---
 .DS_Store
 Thumbs.db
