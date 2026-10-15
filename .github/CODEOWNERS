@@ -1,0 +1,11 @@
+# Default reviewers for patent_drafting_tool.
+# GitHub requests these users/teams on matching paths.
+# Replace @auraflaa with the team handle once teams exist.
+
+* @auraflaa
+/backend/ @auraflaa
+/frontend/ @auraflaa
+/docs/ @auraflaa
+/.github/workflows/ @auraflaa
+/DEPLOYMENT.md @auraflaa
+/SECURITY.md @auraflaa

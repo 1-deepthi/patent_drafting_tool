@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question / Discussion
+    url: https://github.com/auraflaa/patent_drafting_tool/discussions
+    about: Ask questions, share ideas, or show work in Discussions instead of issues.
+  - name: Security vulnerability (private only)
+    url: https://github.com/auraflaa/patent_drafting_tool/security/advisories/new
+    about: Do not open public issues for vulnerabilities. Report privately via advisory or SECURITY.md.
