@@ -1,52 +1,49 @@
-"""Stateless JWT session tokens.
-
-Per product decision: no sessions table, no server-side revocation list.
-A token is valid until its `exp` claim passes. The 30-minute inactivity
-timeout is implemented as a sliding expiry: every authenticated request
-that succeeds causes the frontend to silently refresh the token (see
-POST /api/auth/refresh), so `exp` always reflects "30 minutes from the
-last request" rather than "30 minutes from login". If the token's `exp`
-has passed, the request is rejected and the user must sign in again —
-there is nothing in the DB to revoke.
-"""
-
-from datetime import datetime, timedelta, timezone
-
-import jwt
-
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from app.core.firebase import verify_id_token, FirebaseNotConfigured, db
 from app.core.config import settings
 
-ALGORITHM = settings.jwt_algorithm
+bearer = HTTPBearer(auto_error=False)
 
-
-class TokenError(Exception):
-    """Raised for any invalid/expired/malformed token."""
-
-
-def create_access_token(*, user_id: int, expires_minutes: int | None = None) -> str:
-    now = datetime.now(timezone.utc)
-    expire = now + timedelta(minutes=expires_minutes or settings.jwt_expire_minutes)
-    payload = {
-        "sub": str(user_id),
-        "iat": now,
-        "exp": expire,
-    }
-    return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
-
-
-def decode_access_token(token: str) -> int:
-    """Returns the user_id encoded in the token, or raises TokenError."""
+def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> dict:
+    if not credentials:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'Provide a Firebase ID token as Bearer token.')
     try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM])
-    except jwt.ExpiredSignatureError as exc:
-        raise TokenError("Session expired — please sign in again") from exc
-    except jwt.InvalidTokenError as exc:
-        raise TokenError("Invalid session token") from exc
+        claims = verify_id_token(credentials.credentials)
+        uid = claims.get('uid') or claims.get('sub')
+        snap = db().collection('users').document(uid).get()
+        profile = snap.to_dict() if snap.exists else None
+        if not profile:
+            email = (claims.get('email') or '').lower()
+            role = 'SUPER_ADMIN' if settings.bootstrap_admin_email and email == settings.bootstrap_admin_email.lower() else 'INNOVATOR'
+            profile = {
+                'uid': uid, 'email': email, 'full_name': claims.get('name') or '',
+                'role_codes': [role], 'account_status': 'approved' if role == 'SUPER_ADMIN' else 'pending',
+                'email_verified': bool(claims.get('email_verified')), 'created_at': None,
+            }
+            db().collection('users').document(uid).set(profile)
+        if settings.bootstrap_admin_email and profile.get('email', '').lower() == settings.bootstrap_admin_email.lower():
+            profile['role_codes'] = list(set(profile.get('role_codes', []) + ['SUPER_ADMIN']))
+            profile['account_status'] = 'approved'
+        profile['uid'] = uid
+        profile['_token_claims'] = claims
+        return profile
+    except FirebaseNotConfigured as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'Firebase ID token is invalid or expired.') from exc
 
-    sub = payload.get("sub")
-    if sub is None:
-        raise TokenError("Malformed session token")
-    try:
-        return int(sub)
-    except ValueError as exc:
-        raise TokenError("Malformed session token") from exc
+def active_user(user: dict = Depends(current_user)) -> dict:
+    if user.get('account_status') != 'approved':
+        raise HTTPException(status.HTTP_403_FORBIDDEN, 'Your account is awaiting administrator approval.')
+    return user
+
+def require_roles(*roles: str):
+    def dependency(user: dict = Depends(active_user)) -> dict:
+        if not set(roles).intersection(user.get('role_codes', [])):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, 'Insufficient role permissions.')
+        return user
+    return dependency
+
+def is_admin(user: dict) -> bool:
+    return bool({'ADMIN', 'SUPER_ADMIN'} & set(user.get('role_codes', [])))
