@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { DashboardShell } from "../components/DashboardShell";
 import { DocumentGenerationPanel } from "../components/DocumentGenerationPanel";
 import { CollaborationPanel } from "../components/CollaborationPanel";
+import { LoadingState } from "../components/LoadingState";
 import { StatusBadge } from "../components/StatusBadge";
 import { BasicInfoTab, QuestionnaireTab } from "../components/PatentDetailTabs";
 import { apiFetch } from "../lib/api";
@@ -117,7 +118,7 @@ export default function DraftWorkspacePage() {
         {error ? (
           <p className="text-sm text-red-600">{error}</p>
         ) : (
-          <p className="text-sm text-slate-500">Loading…</p>
+          <LoadingState />
         )}
       </DashboardShell>
     );

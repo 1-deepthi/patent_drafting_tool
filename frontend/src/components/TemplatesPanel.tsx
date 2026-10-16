@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { apiFetch, apiUpload } from "../lib/api";
+import { LoadingState } from "./LoadingState";
 import type { TemplateOut } from "../lib/types";
 
 export function TemplatesPanel() {
@@ -114,7 +115,7 @@ export function TemplatesPanel() {
     }
   }
 
-  if (documentTypes === null) return <p className="text-sm text-slate-500">Loading…</p>;
+  if (documentTypes === null) return <LoadingState />;
 
   return (
     <div className="space-y-4">

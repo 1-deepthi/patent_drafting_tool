@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { DashboardShell } from "../components/DashboardShell";
 import { StatusBadge } from "../components/StatusBadge";
+import { LoadingState } from "../components/LoadingState";
+import { EmptyState } from "../components/EmptyState";
 import { apiFetch } from "../lib/api";
 import type {
   AvailableAgentOut,
@@ -62,9 +64,9 @@ export default function InnovatorDashboard() {
             <h2 className="mb-3 text-sm font-semibold text-slate-700">Your Teams</h2>
             {error && <p className="mb-2 text-xs text-red-600">{error}</p>}
             <div className="space-y-1">
-              {teams === null && <p className="text-xs text-slate-400">Loading…</p>}
+              {teams === null && <LoadingState compact />}
               {teams?.length === 0 && (
-                <p className="text-xs text-slate-400">No teams yet — create one below.</p>
+                <EmptyState title="No teams yet." message="Create one below." />
               )}
               {teams?.map((t) => (
                 <button
@@ -210,7 +212,7 @@ function TeamPanel({
     }
   }
 
-  if (!team) return <p className="text-sm text-slate-500">Loading…</p>;
+  if (!team) return <LoadingState />;
 
   return (
     <div className="space-y-6">
@@ -263,7 +265,7 @@ function TeamPanel({
         <h2 className="mb-3 text-sm font-semibold text-slate-700">Patent Applications</h2>
         <div className="space-y-3">
           {patents?.length === 0 && (
-            <p className="text-xs text-slate-400">No patent applications yet.</p>
+            <EmptyState title="No patent applications yet." />
           )}
           {patents?.map((p) => (
             <PatentCard key={p.id} patent={p} onChanged={load} />
@@ -402,7 +404,7 @@ function PatentCard({ patent, onChanged }: { patent: PatentOut; onChanged: () =>
               Auto-assign (lightest workload)
             </button>
           </div>
-          {agents === null && <p className="text-xs text-slate-400">Loading…</p>}
+          {agents === null && <LoadingState compact />}
           <div className="space-y-1">
             {agents?.map((a) => (
               <button

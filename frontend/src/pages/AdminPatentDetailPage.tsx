@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { DashboardShell } from "../components/DashboardShell";
 import { StatusBadge } from "../components/StatusBadge";
 import { CollaborationPanel } from "../components/CollaborationPanel";
+import { LoadingState } from "../components/LoadingState";
 import { BasicInfoTab, QuestionnaireTab } from "../components/PatentDetailTabs";
 import { apiFetch } from "../lib/api";
 import { type AvailableAgentOut, type PatentOut } from "../lib/types";
@@ -89,7 +90,7 @@ function ReassignAgentPanel({
             continues, same as any other assignment.
           </p>
           {error && <p className="mb-2 text-xs text-red-600">{error}</p>}
-          {agents === null && <p className="text-xs text-slate-400">Loading agents…</p>}
+          {agents === null && <LoadingState compact label="Loading agents…" />}
           <div className="mb-2 space-y-1">
             {agents?.map((a) => (
               <button
@@ -167,7 +168,7 @@ export default function AdminPatentDetailPage() {
         {error ? (
           <p className="text-sm text-red-600">{error}</p>
         ) : (
-          <p className="text-sm text-slate-500">Loading…</p>
+          <LoadingState />
         )}
       </DashboardShell>
     );

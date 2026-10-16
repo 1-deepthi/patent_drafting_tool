@@ -2,6 +2,8 @@ import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { DashboardShell } from "../components/DashboardShell";
 import { TemplatesPanel } from "../components/TemplatesPanel";
+import { LoadingState } from "../components/LoadingState";
+import { EmptyState } from "../components/EmptyState";
 import { apiFetch } from "../lib/api";
 import type {
   PendingUserOut,
@@ -155,13 +157,13 @@ function PendingApprovalsPanel() {
     }
   }
 
-  if (pending === null) return <p className="text-sm text-slate-500">Loading…</p>;
+  if (pending === null) return <LoadingState />;
 
   return (
     <div className="space-y-4">
       {error && <p className="text-sm text-red-600">{error}</p>}
       {pending.length === 0 && (
-        <p className="text-sm text-slate-500">No accounts awaiting approval.</p>
+        <EmptyState title="No accounts awaiting approval." />
       )}
       {pending.map((u) => (
         <div key={u.id} className="rounded-lg border border-slate-200 bg-white p-4">
@@ -238,7 +240,7 @@ function RbacMatrixPanel() {
     load();
   }, []);
 
-  if (!matrix) return <p className="text-sm text-slate-500">Loading…</p>;
+  if (!matrix) return <LoadingState />;
 
   const isGranted = (roleId: number, permId: number) =>
     matrix.grants.some((g) => g.role_id === roleId && g.permission_id === permId);
@@ -359,7 +361,7 @@ function ReportPermissionsPanel() {
     load();
   }, []);
 
-  if (!matrix) return <p className="text-sm text-slate-500">Loading…</p>;
+  if (!matrix) return <LoadingState />;
 
   const isGranted = (roleId: number, reportType: string) =>
     matrix.grants.some((g) => g.role_id === roleId && g.report_type === reportType);
@@ -486,7 +488,7 @@ function AllUsersPanel() {
     }
   }
 
-  if (!users) return <p className="text-sm text-slate-500">Loading…</p>;
+  if (!users) return <LoadingState />;
 
   return (
     <div className="space-y-3">

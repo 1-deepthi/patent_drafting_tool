@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI/CD: `ci.yml` (backend compile + pytest, frontend lint + build on `ubuntu`/`windows`/`macos`), `docker.yml` (backend + frontend image builds + backend `/health` smoke test), `codeql.yml` (CodeQL for Python + JavaScript).
 - Apache-2.0 `LICENSE` with `SPDX-License-Identifier` notice.
 - Root `.editorconfig`, `.nvmrc` (Node 20), `backend/.python-version` (3.13), hardened root `.gitignore`.
+- Architecture Decision Records in `docs/decisions/` (ADR-001 Firebase runtime, ADR-002 role array, ADR-003 single instance, ADR-004 stub-first AI).
+- `AGENTS.md` (agent instructions), `CITATION.cff`, `docs/FAQ.md`, `docs/TROUBLESHOOTING.md`; `ref-repos/` convention for ignored reference clones.
+- Shared centred `LoadingState` / `EmptyState` frontend components replacing scattered left-aligned loading/empty paragraphs; wrapping dashboard header for small screens.
+
+### Fixed
+
+- Docker workflow used the non-existent `docker/build-action` (failed at "Set up job") — corrected to `docker/build-push-action`; action existence now verified before merging workflow changes.
+- Backend image could never boot on the Firebase runtime: the entrypoint unconditionally ran `alembic upgrade head` (binary absent) and `requirements.txt` lacked the `gunicorn` the Dockerfile CMD needs. Entrypoint now migrates only when alembic + `DATABASE_URL` exist; `gunicorn` pinned in requirements.
 
 ### Changed
 

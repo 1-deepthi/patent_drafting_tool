@@ -37,7 +37,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build backend image
-        uses: docker/build-action@v6
+        uses: docker/build-push-action@v6
         with:
           context: ./backend
           tags: patent-backend:ci
@@ -46,7 +46,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build frontend image
-        uses: docker/build-action@v6
+        uses: docker/build-push-action@v6
         with:
           context: ./frontend
           build-args: VITE_API_URL=http://localhost:8000
