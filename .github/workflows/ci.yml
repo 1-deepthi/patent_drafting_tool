@@ -65,9 +65,15 @@ jobs:
 
   # --------------------------------------- backend legacy suite (advisory) --
   # The tests/ directory targets the archived Postgres/SQLAlchemy API
-  # (dev-login, TRUNCATE fixtures) which is not mounted by app/main.py.
-  # This job tracks migration debt without blocking merges: it is
-  # intentionally continue-on-error until the Firebase-path suite lands.
+  # (dev-login, TRUNCATE fixtures) which is not mounted by app/main.py, and
+  # its test-only dependencies (pytest-asyncio, sqlalchemy, asyncpg) are
+  # intentionally absent from requirements.txt. Running pytest unconditionally
+  # therefore dies in conftest import (exit code 4) — noise, not signal.
+  # This job tracks migration debt without blocking merges: it probes for the
+  # legacy prerequisites and quarantines (skips with a visible notice) when
+  # they are absent. When migration work restores the Firebase-path suite and
+  # its deps, the gate flips and the suite runs for real.
+  # It is intentionally continue-on-error until then.
   # DO NOT add this job to required branch-protection checks.
   backend-legacy-suite:
     name: backend-legacy-suite / ubuntu (advisory, allowed to fail)
@@ -103,7 +109,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run legacy test suite (expected to fail during Firebase migration)
+      - name: Check legacy suite prerequisites
+        id: legacy-check
+        run: |
+          if python -c "import pytest_asyncio" 2>/dev/null; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Legacy SQL test suite is quarantined: its test-only dependencies (pytest-asyncio and friends) are not installed and tests/ targets the unmounted legacy API. See CHANGELOG.md Known gaps. Skipping collection instead of failing it."
+          fi
+
+      - name: Run legacy test suite (only when its prerequisites exist)
+        if: steps.legacy-check.outputs.ready == 'true'
         run: python -m pytest -q
 
   # --------------------------------------------------------------- frontend --
