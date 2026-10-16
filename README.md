@@ -1,15 +1,17 @@
-# patent_drafting_tool
-
-> An open-source collaborative platform for drafting, reviewing, and managing patent applications — from invention disclosure to filing-ready documents.
-
-[![CI](https://github.com/auraflaa/patent_drafting_tool/actions/workflows/ci.yml/badge.svg)](https://github.com/auraflaa/patent_drafting_tool/actions/workflows/ci.yml)
-[![Docker](https://github.com/auraflaa/patent_drafting_tool/actions/workflows/docker.yml/badge.svg)](https://github.com/auraflaa/patent_drafting_tool/actions/workflows/docker.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](./LICENSE)
-[![Code of Conduct](https://img.shields.io/badge/Code%20of%20Conduct-Contributor%20Covenant-4baaaa.svg)](./CODE_OF_CONDUCT.md)
-[![Contributing](https://img.shields.io/badge/Contributing-Guide-green.svg)](./CONTRIBUTING.md)
-[![Security](https://img.shields.io/badge/Security-Policy-red.svg)](./SECURITY.md)
-[![Accessibility](https://img.shields.io/badge/Accessibility-WCAG%202.2%20AA-purple.svg)](./ACCESSIBILITY.md)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
+<div align="center">
+  <h1>patent_drafting_tool</h1>
+  <p><em>An open-source collaborative platform for drafting, reviewing, and managing patent applications — from invention disclosure to filing-ready documents.</em></p>
+  <p>
+    <a href="https://github.com/auraflaa/patent_drafting_tool/actions/workflows/ci.yml"><img src="https://github.com/auraflaa/patent_drafting_tool/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+    <a href="https://github.com/auraflaa/patent_drafting_tool/actions/workflows/docker.yml"><img src="https://github.com/auraflaa/patent_drafting_tool/actions/workflows/docker.yml/badge.svg" alt="Docker status"></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
+    <a href="./CODE_OF_CONDUCT.md"><img src="https://img.shields.io/badge/Code%20of%20Conduct-Contributor%20Covenant-4baaaa.svg" alt="Code of Conduct"></a>
+    <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/Contributing-Guide-green.svg" alt="Contributing guide"></a>
+    <a href="./SECURITY.md"><img src="https://img.shields.io/badge/Security-Policy-red.svg" alt="Security policy"></a>
+    <a href="./ACCESSIBILITY.md"><img src="https://img.shields.io/badge/Accessibility-WCAG%202.2%20AA-purple.svg" alt="Accessibility: WCAG 2.2 AA"></a>
+    <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome"></a>
+  </p>
+</div>
 
 ---
 
@@ -137,7 +139,7 @@ The active Firebase backend uses a simplified `status` / `workflow_status` pair 
 **Infrastructure**
 
 - `docker-compose.yml`: local Postgres + backend (gunicorn) for full-stack testing.
-- `backend/Dockerfile`: multi-stage Python build, LibreOffice, non-root `appuser`, `HEALTHCHECK /health`, entrypoint runs migrations (legacy) then Gunicorn.
+- `backend/Dockerfile`: multi-stage Python build, LibreOffice, non-root `appuser`, `HEALTHCHECK /health`, entrypoint migrates only on the legacy SQL path, then Gunicorn.
 - `frontend/Dockerfile`: Node build → nginx serve with SPA fallback (`frontend/nginx.conf`).
 - CI: `.github/workflows/ci.yml` (lint + test + build, cross-OS matrix) and `docker.yml` (image builds).
 
@@ -263,7 +265,7 @@ npm run dev
 
 Open http://localhost:5173.
 
-Full step-by-step with screenshots checklist: [`docs/GETTING_STARTED.md`](./docs/GETTING_STARTED.md).
+Full step-by-step walkthrough: [`docs/GETTING_STARTED.md`](./docs/GETTING_STARTED.md).
 
 ### 7.4 First admin login
 
@@ -417,7 +419,6 @@ Production checklist (enforced by `app/core/startup_checks.py` on the legacy pat
 | [`docs/FAQ.md`](./docs/FAQ.md) | Short answers to repeated questions |
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | System diagram, auth model, Firestore collections, state machine, AI providers |
 | [`docs/decisions/`](./docs/decisions/) | Architecture Decision Records (ADR-001 Firebase runtime, ADR-002 roles, ADR-003 single instance, ADR-004 stub-first AI) |
-| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | System diagram, auth model, Firestore collections, state machine, AI providers |
 | [`docs/API_OVERVIEW.md`](./docs/API_OVERVIEW.md) | Endpoint catalog with methods, auth, and payloads |
 | [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md) | Dev workflow, code style, scripts, common errors |
 | [`docs/DOCKER.md`](./docs/DOCKER.md) | Docker + Compose reference |
@@ -494,4 +495,4 @@ SPDX-License-Identifier: Apache-2.0
 - Built with FastAPI, React, Vite, Firebase, Firestore, and Cloud Storage.
 - DOCX pipeline via `python-docx`; PDF conversion via LibreOffice in Docker.
 - Calendar via FullCalendar, charts via Recharts, PDF preview via react-pdf.
-- Thanks to all contributors — see commit history and future `CONTRIBUTORS` listing.
+- Thanks to all contributors — see commit history.
