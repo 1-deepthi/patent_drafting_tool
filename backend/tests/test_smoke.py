@@ -642,6 +642,21 @@ def test_upload_allowlist_and_content_sniffing() -> None:
         )
 
 
+def test_upload_filename_cannot_escape_or_carry_control_characters() -> None:
+    from app.services import uploads
+
+    name = uploads.sanitize_filename('..\\..\\evil\r\n"name".pdf')
+    assert "\\" not in name
+    assert "/" not in name
+    assert "\r" not in name and "\n" not in name
+    assert '"' not in name
+    assert name.endswith(".pdf")
+
+    long_name = uploads.sanitize_filename("a" * 400 + ".docx")
+    assert len(long_name) <= uploads.MAX_FILENAME_LENGTH
+    assert long_name.endswith(".docx")
+
+
 def test_docx_content_is_checked_before_parsing() -> None:
     import zipfile
 
