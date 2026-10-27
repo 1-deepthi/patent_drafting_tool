@@ -60,7 +60,16 @@ Current controls (Firebase runtime):
   creators, team members, assignees, and admins
   (`backend/app/services/projections.py`).
 - **Account gating:** new users are `pending` until approved; the bootstrap
-  admin is a single configured email.
+  admin is a single configured email. A Super Admin cannot reject their own
+  account or another Super Admin, and approvals, rejections, role changes, and
+  permission/report-grant changes write an `activity` audit entry.
+- **Report access:** the users report is admin-only. It is omitted from the
+  catalog for other roles, rejected by `run`/`export` before any Firestore
+  query, and cannot be granted to non-admin roles through the report matrix.
+- **Input bounds:** patent titles, applicant/inventor fields, questionnaire
+  text, and AI output are length-bounded and type-checked; control characters
+  are rejected (except newlines/tabs where a field is multi-line). This keeps
+  a single document below Firestore's 1 MiB limit.
 - **Upload validation:** non-empty content, `MAX_UPLOAD_SIZE_BYTES` cap, an
   `ALLOWED_UPLOAD_EXTENSIONS` allowlist, and content sniffing (magic bytes)
   so a renamed executable cannot pass as a PDF or image. Office containers
@@ -70,7 +79,10 @@ Current controls (Firebase runtime):
   from the client. Templates are restricted to `.docx`.
 - **Transport:** CORS allow-list (`CORS_ORIGINS`), trusted hosts
   (`ALLOWED_HOSTS`), HTTPS required in production, HSTS in production only,
-  and a strict CSP on API responses (Swagger/ReDoc exempt).
+  and a strict CSP on API responses (Swagger/ReDoc exempt). The static
+  frontend CSP allows only the Firebase Auth loader (`apis.google.com`) and
+  auth frame (`*.firebaseapp.com`, `accounts.google.com`) in addition to
+  `'self'`; production startup warns when `ALLOWED_HOSTS` is still `*`.
 - **Observability:** every response carries an `X-Request-ID` that is either a
   safe client value or a generated hex ID, and application logs are JSON lines
   carrying that ID and the event name.

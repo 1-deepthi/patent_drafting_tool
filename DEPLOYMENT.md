@@ -229,6 +229,48 @@ Two supported shapes:
 | Split (recommended) | Vercel static | Container per §3 (Cloud Run, Fly.io, Render, …) | Yes |
 | Single vendor | Vercel static | Vercel Python function, `DEPLOYMENT_TARGET=vercel` | No, unless you use the container runtime (beta) |
 
+### Static frontend on Vercel
+
+The repository ships two configs because Vercel only reads `vercel.json`
+from the project's **Root Directory**:
+
+| Root Directory | Config | Behaviour |
+|---|---|---|
+| Repository root (default) | `vercel.json` | Runs `npm --prefix frontend ci` / `npm --prefix frontend run build`, publishes `frontend/dist`. |
+| `frontend` | `frontend/vercel.json` | Vercel's Vite preset installs and builds in place, publishing `dist`. |
+
+Pick one and leave the other untouched; do not set Root Directory to
+`frontend` while also expecting the root config to apply. Both files contain
+the same SPA rewrite and security headers; `backend/tests/test_smoke.py`
+checks that the two configs stay in step and that the Firebase Auth origins
+remain allowed alongside the nginx policy.
+
+Set these **build-time** variables in the Vercel project (Project → Settings →
+Environment Variables) before the first deployment:
+
+- `VITE_API_URL` — the backend origin, e.g. `https://api.example.com`.
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN` — normally `<project>.firebaseapp.com`.
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_STORAGE_BUCKET`
+- `VITE_FIREBASE_MESSAGING_SENDER_ID`
+- `VITE_FIREBASE_APP_ID`
+
+Vite inlines `VITE_*` values at build time, so changing one requires a new
+deployment, not a restart. On the backend, add the Vercel production domain to
+`CORS_ORIGINS`; add preview domains too if you use preview deployments.
+
+The static CSP allows `https://apis.google.com` (Firebase Auth's loader) and
+the `https://*.firebaseapp.com` / `https://accounts.google.com` frames the
+Google popup needs. If `VITE_FIREBASE_AUTH_DOMAIN` is a custom domain, add it
+to `frame-src` in `frontend/nginx.conf`, `vercel.json`, and
+`frontend/vercel.json`.
+
+Do not add an `api/index.py` backend entry point to this Vercel project while
+using the split shape: the static frontend and the Python backend deploy
+separately, and the backend needs a host that can mount credentials and (for
+PDF) run LibreOffice.
+
 Running the backend as a Vercel Python function:
 
 1. Set `DEPLOYMENT_TARGET=vercel`, so the effective upload cap is 4 MiB and

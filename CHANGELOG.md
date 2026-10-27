@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Content-Security-Policy on API responses and the nginx frontend, and HSTS in production; the backend exempts Swagger/ReDoc paths so the docs stay usable.
 - Profile-field validation (`/api/auth/sync`): per-field length bounds, string-only values, control-character rejection, and an http(s)-only `profile_picture`.
 - Abandoned `Processing` document jobs are reaped into `Failed` after 15 minutes so the UI can retry them.
+- Root `vercel.json` and `frontend/vercel.json` for a static frontend deployment: an SPA fallback rewrite, immutable caching for hashed assets, and the same security headers as nginx (including the Firebase Auth CSP allowances).
+- Audit entries (`activity` documents) for account approval/rejection, role assignment/revocation, and RBAC/report-grant changes, so Super Admin actions are attributable after the fact.
+- Length and type bounds for patent titles, applicant/inventor fields, questionnaire text, and AI output (60,000 characters); non-string and control-character payloads are rejected before they reach Firestore.
 
 ### Changed
 
@@ -55,6 +58,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PendingApprovalPage` stops polling once the session is no longer pending, `ProtectedRoute` uses the shared `LoadingState`, and the PDF button stays disabled until capabilities load.
 - Sign-in failures show the mapped Firebase hint plus the raw error code when it is unrecognised, and an API session that cannot be described renders an alert instead of silently returning to the login screen.
 - The nginx `/assets/` location repeats the security headers; nginx drops inherited `add_header` directives in a location that declares its own.
+- The production CSP blocked Google sign-in because Firebase Auth loads `https://apis.google.com/js/api.js` and renders its auth iframe on `*.firebaseapp.com`; both nginx locations and both Vercel configs now allow those origins.
+- The users report is hidden from the catalog for non-admins, and `run`/`export` reject it before querying Firestore, so a report grant cannot widen account data to Innovators or Patent Agents.
+- Deleting a calendar event now requires `CALENDAR_MANAGE`, matching event creation.
+- `reject_user` refuses to reject the caller's own account or another Super Admin, preventing an accidental lockout.
+- Patent title, applicant/inventor, and questionnaire fields are length-bounded; Gemini output is capped before it is written to a Firestore document.
+- Production startup warns when `ALLOWED_HOSTS` is still `*`.
 
 ### Known gaps (tracked, not yet fixed)
 

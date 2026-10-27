@@ -345,6 +345,8 @@ Copy from `frontend/.env.example`. `VITE_*` values are **baked at build time**.
 
 These values are public by design (they identify the Firebase project). The service-account JSON is the secret and stays server-side. Missing Web SDK values do **not** break the build: `src/lib/firebase.ts` reports a configuration error on the login screen instead.
 
+For a static Vercel deployment, set the same `VITE_*` values in the Vercel project and use the checked-in `vercel.json` (repo-root project) or `frontend/vercel.json` (Root Directory = `frontend`); see `DEPLOYMENT.md` → Vercel deployment notes.
+
 The browser uses the Web SDK for **Authentication only**. Firestore and Storage are reached exclusively by the backend Admin SDK, so the checked-in `firestore.rules` and `storage.rules` deny every direct client read and write. Deploy them with `firebase deploy --only firestore:rules,storage` after `firebase use --add`. There is no Realtime Database in this architecture.
 
 ---
