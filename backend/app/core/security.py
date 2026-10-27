@@ -26,7 +26,10 @@ def _bootstrap_email(email: str) -> bool:
 
 def _new_profile(uid: str, claims: dict) -> dict:
     email = (claims.get("email") or "").lower()
-    bootstrap = _bootstrap_email(email)
+    # Never grant bootstrap privileges to an unverified address. Google
+    # sign-in always sets this, but an operator who later enables
+    # email/password must not let anyone claim the bootstrap address.
+    bootstrap = _bootstrap_email(email) and bool(claims.get("email_verified"))
     stamp = now_iso()
     return {
         "email": email,
@@ -78,7 +81,11 @@ def current_user(
 
     # The bootstrap account is always an approved Super Admin, even if an
     # older profile predates that setting. Write only when something changed.
-    if _bootstrap_email(profile.get("email", "")):
+    # Profiles created before `email_verified` was stored keep the old
+    # behaviour; new profiles always carry the claim.
+    if _bootstrap_email(profile.get("email", "")) and profile.get(
+        "email_verified", True
+    ):
         roles = set(profile.get("role_codes") or [])
         if "SUPER_ADMIN" not in roles or profile.get("account_status") != APPROVED:
             roles.add("SUPER_ADMIN")
