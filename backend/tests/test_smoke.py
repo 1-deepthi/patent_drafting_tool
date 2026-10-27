@@ -601,3 +601,22 @@ def test_gemini_key_is_a_header_and_never_echoed(
     assert secret not in str(exc.value)
     assert "key" not in seen
     assert seen["headers"]["x-goog-api-key"] == secret
+
+
+def test_request_id_is_echoed_and_untrusted_values_are_replaced(
+    client: TestClient,
+) -> None:
+    supplied = client.get(
+        "/api/config/capabilities", headers={"X-Request-ID": "support-ticket-42"}
+    )
+    assert supplied.headers["x-request-id"] == "support-ticket-42"
+
+    # A header value that could break logging or response headers is replaced
+    # with a generated hex ID rather than reflected.
+    hostile = client.get(
+        "/api/config/capabilities", headers={"X-Request-ID": "bad value\r\nx: y"}
+    )
+    generated = hostile.headers["x-request-id"]
+    assert generated != "bad value\r\nx: y"
+    assert len(generated) == 32
+    assert all(char in "0123456789abcdef" for char in generated)

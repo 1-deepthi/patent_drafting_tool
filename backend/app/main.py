@@ -8,8 +8,11 @@ from app.core.errors import UnhandledErrorMiddleware
 from app.core.firebase import initialize_firebase
 from app.core.headers import SecurityHeadersMiddleware
 from app.core.limits import RequestBodyLimitMiddleware
+from app.core.logging import RequestIDMiddleware, configure_logging
 from app.api.auth import router as auth_router
 from app.api.resources import router as resources_router
+
+configure_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -27,8 +30,9 @@ app = FastAPI(title=settings.app_name, version='1.0.0', description='Firebase-ba
 # CORS goes near the end: it must wrap the 413 from the body guard, the 400
 # from the host check, and every route response so the browser can read them.
 # The body guard stays innermost so an oversized body is rejected before
-# routing. Security headers go on top of everything the app produces, and the
-# catch-all error handler sits inside CORS so even a 500 is readable.
+# routing. Security headers wrap everything the app produces; the catch-all
+# error handler sits inside CORS so even a 500 is readable. Request IDs are
+# outermost so every response and log line can be correlated.
 app.add_middleware(UnhandledErrorMiddleware, production=settings.environment == 'production')
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=[x.strip() for x in settings.allowed_hosts.split(',') if x.strip()] or ['*'])
@@ -38,9 +42,13 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],
-    expose_headers=['Content-Disposition'],
+    expose_headers=['Content-Disposition', 'X-Request-ID'],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+# Outermost: every response (including the body guard's 413 and the host
+# check's 400) carries an ID, and every app log line can be traced to a
+# request.
+app.add_middleware(RequestIDMiddleware)
 
 @app.get('/', tags=['health'])
 def root():
