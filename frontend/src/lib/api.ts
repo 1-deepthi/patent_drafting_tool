@@ -1,10 +1,22 @@
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
-let currentToken: string | null = null;
+/** Returns a fresh Firebase ID token for the signed-in user, or null. */
+type TokenProvider = () => Promise<string | null>;
 
-/** Called by AuthContext whenever the token changes (login/refresh/logout). */
-export function setAuthToken(token: string | null) {
-  currentToken = token;
+let tokenProvider: TokenProvider = async () => null;
+
+/**
+ * Called once by AuthContext. Firebase ID tokens expire after an hour, so the
+ * provider is asked for a token on every request instead of a cached string
+ * being pushed in here.
+ */
+export function setTokenProvider(provider: TokenProvider) {
+  tokenProvider = provider;
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const token = await tokenProvider();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 export class ApiError extends Error {
@@ -25,11 +37,8 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
   const finalHeaders: Record<string, string> = {
     "Content-Type": "application/json",
     ...(headers as Record<string, string> | undefined),
+    ...(auth ? await authHeaders() : {}),
   };
-
-  if (auth && currentToken) {
-    finalHeaders["Authorization"] = `Bearer ${currentToken}`;
-  }
 
   const response = await fetch(`${API_URL}${path}`, {
     ...rest,
@@ -51,10 +60,6 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
   return (await response.json()) as T;
 }
 
-export function googleLoginUrl(): string {
-  return `${API_URL}/api/auth/google/login`;
-}
-
 /** For multipart uploads — apiFetch always sends Content-Type: application/json,
  * which breaks a multipart body, so this builds its own fetch with just the
  * Authorization header and lets the browser set the multipart boundary. */
@@ -67,8 +72,7 @@ export async function apiUpload<T>(
   const formData = new FormData();
   formData.append(fieldName, file);
 
-  const finalHeaders: Record<string, string> = {};
-  if (currentToken) finalHeaders["Authorization"] = `Bearer ${currentToken}`;
+  const finalHeaders: Record<string, string> = { ...(await authHeaders()) };
 
   const qs = query
     ? "?" + new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)])).toString()
@@ -98,8 +102,7 @@ export async function apiUpload<T>(
  * fetches the blob directly, reads the filename from Content-Disposition,
  * and triggers a normal browser download via a throwaway <a> tag. */
 export async function apiDownload(path: string, fallbackFilename: string): Promise<void> {
-  const finalHeaders: Record<string, string> = {};
-  if (currentToken) finalHeaders["Authorization"] = `Bearer ${currentToken}`;
+  const finalHeaders: Record<string, string> = { ...(await authHeaders()) };
 
   const response = await fetch(`${API_URL}${path}`, { headers: finalHeaders });
   if (!response.ok) {

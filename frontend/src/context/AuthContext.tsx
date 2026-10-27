@@ -8,16 +8,23 @@ import {
   useState,
 } from "react";
 import type { ReactNode } from "react";
-import { apiFetch, setAuthToken } from "../lib/api";
-import type { MeResponse, TokenResponse, UserOut } from "../lib/types";
+import {
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signInWithPopup,
+  signInWithRedirect,
+  signOut,
+  type User as FirebaseUser,
+} from "firebase/auth";
+import { apiFetch, setTokenProvider, ApiError } from "../lib/api";
+import { FirebaseConfigError, firebaseAuth, isFirebaseConfigured } from "../lib/firebase";
+import type { MeResponse, UserOut } from "../lib/types";
 
-const TOKEN_STORAGE_KEY = "patent_platform_token";
-// How often we check whether the user has been active and, if so, silently
-// refresh the token. This implements the "30-minute inactivity timeout"
-// spec as a sliding JWT expiry: each refresh mints a fresh 30-minute
-// window. If the person is genuinely idle for 30 minutes, no refresh
-// happens, the token's `exp` passes, and the next API call/refresh 401s.
-const ACTIVITY_CHECK_INTERVAL_MS = 60_000; // 1 minute
+// Product requirement: a session ends after 30 minutes of inactivity. Firebase
+// itself keeps the browser session alive and refreshes ID tokens in the
+// background, so the idle rule is enforced here instead of through JWT expiry.
+const IDLE_TIMEOUT_MS = 30 * 60_000;
+const IDLE_CHECK_INTERVAL_MS = 60_000;
 const ACTIVITY_EVENTS = ["mousedown", "keydown", "scroll", "touchstart"] as const;
 
 type AuthStatus = "loading" | "unauthenticated" | "pending" | "approved";
@@ -26,29 +33,64 @@ interface AuthContextValue {
   status: AuthStatus;
   user: UserOut | null;
   permissions: string[];
+  /** Set when Firebase Web config is missing from the build. */
+  configError: string | null;
   hasPermission: (code: string) => boolean;
   hasRole: (code: string) => boolean;
-  loginWithToken: (res: TokenResponse) => void;
+  signInWithGoogle: () => Promise<void>;
   logout: () => void;
   refreshMe: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+const PENDING_ACCOUNT_STATUSES = new Set(["Pending", "Rejected", "Suspended"]);
+
+const GOOGLE_PROVIDER = new GoogleAuthProvider();
+GOOGLE_PROVIDER.setCustomParameters({ prompt: "select_account" });
+
+/** Pop-ups are blocked or unsupported in a few environments; fall back to a full redirect. */
+function shouldFallBackToRedirect(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  return (
+    code === "auth/popup-blocked" ||
+    code === "auth/popup-closed-by-user" ||
+    code === "auth/cancelled-popup-request" ||
+    code === "auth/operation-not-supported-in-this-environment"
+  );
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("loading");
   const [user, setUser] = useState<UserOut | null>(null);
   const [permissions, setPermissions] = useState<string[]>([]);
+  const [configError, setConfigError] = useState<string | null>(
+    isFirebaseConfigured() ? null : new FirebaseConfigError().message,
+  );
   const lastActivityRef = useRef<number>(Date.now());
-  const lastRefreshRef = useRef<number>(0);
 
-  const applyToken = useCallback((token: string | null) => {
-    setAuthToken(token);
-    if (token) {
-      localStorage.setItem(TOKEN_STORAGE_KEY, token);
-    } else {
-      localStorage.removeItem(TOKEN_STORAGE_KEY);
+  const clearSession = useCallback(() => {
+    setUser(null);
+    setPermissions([]);
+    setStatus("unauthenticated");
+  }, []);
+
+  // Every API call asks Firebase for the current ID token, so a token that is
+  // refreshed or revoked in another tab is picked up on the next request.
+  useEffect(() => {
+    if (!isFirebaseConfigured()) {
+      setTokenProvider(async () => null);
+      return;
     }
+    setTokenProvider(async () => {
+      try {
+        const current = firebaseAuth().currentUser;
+        return current ? await current.getIdToken() : null;
+      } catch {
+        return null;
+      }
+    });
+    return () => setTokenProvider(async () => null);
   }, []);
 
   const loadMe = useCallback(async () => {
@@ -56,80 +98,108 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const me = await apiFetch<MeResponse>("/api/auth/me");
       setUser(me.user);
       setPermissions(me.permissions);
-      setStatus(me.user.account_status === "Approved" ? "approved" : "pending");
-    } catch {
-      applyToken(null);
-      setUser(null);
-      setPermissions([]);
-      setStatus("unauthenticated");
+      setStatus(
+        PENDING_ACCOUNT_STATUSES.has(me.user.account_status) ? "pending" : "approved",
+      );
+    } catch (error) {
+      // A 401 means Firebase no longer accepts the session; anything else
+      // (network, 5xx) also leaves us unable to describe the user.
+      if (error instanceof ApiError && error.status === 401) {
+        try {
+          await signOut(firebaseAuth());
+        } catch {
+          // nothing else to do — the local state is cleared below
+        }
+      }
+      clearSession();
     }
-  }, [applyToken]);
+  }, [clearSession]);
 
-  // Bootstrap from localStorage on first load.
+  const handleSignedIn = useCallback(
+    async (firebaseUser: FirebaseUser | null) => {
+      if (!firebaseUser) {
+        clearSession();
+        return;
+      }
+      // Ensure the first request after a redirect sign-in carries a token.
+      try {
+        await firebaseUser.getIdToken();
+      } catch {
+        clearSession();
+        return;
+      }
+      await loadMe();
+    },
+    [clearSession, loadMe],
+  );
+
   useEffect(() => {
-    const stored = localStorage.getItem(TOKEN_STORAGE_KEY);
-    if (!stored) {
+    if (!isFirebaseConfigured()) {
       setStatus("unauthenticated");
       return;
     }
-    setAuthToken(stored);
-    loadMe();
-  }, [loadMe]);
+    let unsubscribe: (() => void) | undefined;
+    try {
+      unsubscribe = onAuthStateChanged(firebaseAuth(), (firebaseUser) => {
+        void handleSignedIn(firebaseUser);
+      });
+    } catch (error) {
+      setConfigError(
+        error instanceof Error ? error.message : "Firebase could not be initialised.",
+      );
+      setStatus("unauthenticated");
+    }
+    return () => unsubscribe?.();
+  }, [handleSignedIn]);
 
-  const loginWithToken = useCallback(
-    (res: TokenResponse) => {
-      applyToken(res.access_token);
-      setUser(res.user);
-      lastRefreshRef.current = Date.now();
-      loadMe();
-    },
-    [applyToken, loadMe]
-  );
+  const signInWithGoogle = useCallback(async () => {
+    const auth = firebaseAuth();
+    try {
+      await signInWithPopup(auth, GOOGLE_PROVIDER);
+    } catch (error) {
+      if (shouldFallBackToRedirect(error)) {
+        await signInWithRedirect(auth, GOOGLE_PROVIDER);
+        return;
+      }
+      throw error;
+    }
+  }, []);
 
   const logout = useCallback(() => {
-    apiFetch("/api/auth/logout", { method: "POST" }).catch(() => {
-      // best-effort — we clear client state regardless
-    });
-    applyToken(null);
-    setUser(null);
-    setPermissions([]);
-    setStatus("unauthenticated");
-  }, [applyToken]);
+    // Best-effort ACK; the real session lives in Firebase, not the API.
+    apiFetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    try {
+      void signOut(firebaseAuth());
+    } catch {
+      // already signed out or unconfigured
+    }
+    clearSession();
+  }, [clearSession]);
 
-  // Track user activity.
+  // Track activity for the idle rule.
   useEffect(() => {
     const markActive = () => {
       lastActivityRef.current = Date.now();
     };
-    ACTIVITY_EVENTS.forEach((evt) => window.addEventListener(evt, markActive));
-    return () => ACTIVITY_EVENTS.forEach((evt) => window.removeEventListener(evt, markActive));
+    ACTIVITY_EVENTS.forEach((event) => window.addEventListener(event, markActive));
+    return () =>
+      ACTIVITY_EVENTS.forEach((event) => window.removeEventListener(event, markActive));
   }, []);
 
-  // Sliding-expiry refresh loop.
   useEffect(() => {
     if (status !== "approved") return;
-
-    const interval = setInterval(async () => {
-      const idleForMs = Date.now() - lastActivityRef.current;
-      if (idleForMs > 30 * 60_000) return; // idle too long — let it expire naturally
-
-      try {
-        const res = await apiFetch<TokenResponse>("/api/auth/refresh", { method: "POST" });
-        applyToken(res.access_token);
-        lastRefreshRef.current = Date.now();
-      } catch {
-        // Token already expired or invalid — force logout.
-        applyToken(null);
-        setUser(null);
-        setPermissions([]);
-        setStatus("unauthenticated");
+    const interval = setInterval(() => {
+      if (Date.now() - lastActivityRef.current > IDLE_TIMEOUT_MS) {
+        logout();
       }
-    }, ACTIVITY_CHECK_INTERVAL_MS);
-
+    }, IDLE_CHECK_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [status, applyToken]);
+  }, [status, logout]);
 
-  const hasPermission = useCallback((code: string) => permissions.includes(code), [permissions]);
+  const hasPermission = useCallback(
+    (code: string) => permissions.includes(code),
+    [permissions],
+  );
   const hasRole = useCallback((code: string) => user?.roles.includes(code) ?? false, [user]);
 
   const value = useMemo<AuthContextValue>(
@@ -137,13 +207,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       status,
       user,
       permissions,
+      configError,
       hasPermission,
       hasRole,
-      loginWithToken,
+      signInWithGoogle,
       logout,
       refreshMe: loadMe,
     }),
-    [status, user, permissions, hasPermission, hasRole, loginWithToken, logout, loadMe]
+    [
+      status,
+      user,
+      permissions,
+      configError,
+      hasPermission,
+      hasRole,
+      signInWithGoogle,
+      logout,
+      loadMe,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
