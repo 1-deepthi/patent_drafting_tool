@@ -25,6 +25,20 @@ def read_bytes(path: str) -> bytes:
         raise StorageError(f"Could not read from Firebase Storage: {exc}") from exc
 
 
+def open_stream(path: str):
+    """Open a Storage blob as a file-like object for chunked downloads.
+
+    Streaming keeps large generated documents from being buffered twice and
+    lets responses pass through hosts that cap buffered response bodies.
+    """
+    try:
+        return bucket().blob(path).open("rb")
+    except FirebaseNotConfigured as exc:
+        raise StorageError(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise StorageError(f"Could not read from Firebase Storage: {exc}") from exc
+
+
 def delete_path(path: str) -> None:
     if not path:
         return

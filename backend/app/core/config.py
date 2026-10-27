@@ -1,4 +1,17 @@
+from typing import Literal
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+MIB = 1024 * 1024
+
+# Vercel rejects request/response bodies above 4.5 MB before the app runs.
+# Keep uploads below that with room for multipart boundaries and form fields.
+VERCEL_BODY_LIMIT_BYTES = 4_500_000
+MULTIPART_OVERHEAD_BYTES = 64 * 1024
+DEFAULT_SELF_HOSTED_UPLOAD_BYTES = 10 * MIB
+DEFAULT_VERCEL_UPLOAD_BYTES = 4 * MIB
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', extra='ignore')
@@ -11,7 +24,13 @@ class Settings(BaseSettings):
     bootstrap_admin_email: str = ''
     cors_origins: str = 'http://localhost:5173,http://127.0.0.1:5173'
     allowed_hosts: str = '*'
-    max_upload_size_bytes: int = 10 * 1024 * 1024
+    # `vercel` clamps the upload limit below Vercel's 4.5 MB function body cap.
+    deployment_target: Literal['self_hosted', 'vercel'] = 'self_hosted'
+    # 0 means "use the deployment target's default".
+    max_upload_size_bytes: int = Field(default=0, ge=0)
+    # PDF conversion shells out to LibreOffice, which serverless Python
+    # runtimes do not ship. Set false to offer DOCX only.
+    pdf_conversion_enabled: bool = True
     blocked_upload_extensions: str = '.exe,.bat,.cmd,.sh,.msi,.com,.dll,.scr,.jar'
     gemini_api_key: str = ''
     gemini_model: str = 'gemini-2.0-flash'
@@ -20,5 +39,36 @@ class Settings(BaseSettings):
     @property
     def blocked_extensions(self) -> tuple[str, ...]:
         return tuple(x.strip().lower() for x in self.blocked_upload_extensions.split(',') if x.strip())
+
+    @property
+    def upload_limit_bytes(self) -> int:
+        """Effective per-file limit, clamped to the host platform's cap."""
+        if self.max_upload_size_bytes:
+            limit = self.max_upload_size_bytes
+        elif self.deployment_target == 'vercel':
+            limit = DEFAULT_VERCEL_UPLOAD_BYTES
+        else:
+            limit = DEFAULT_SELF_HOSTED_UPLOAD_BYTES
+        if self.deployment_target == 'vercel':
+            limit = min(limit, VERCEL_BODY_LIMIT_BYTES - MULTIPART_OVERHEAD_BYTES)
+        return max(1, limit)
+
+    @property
+    def request_body_limit_bytes(self) -> int:
+        """Limit for the whole request, including multipart overhead."""
+        limit = self.upload_limit_bytes + MULTIPART_OVERHEAD_BYTES
+        if self.deployment_target == 'vercel':
+            limit = min(limit, VERCEL_BODY_LIMIT_BYTES)
+        return limit
+
+    def capabilities(self) -> dict:
+        """Public runtime limits the frontend uses to fail fast and adapt."""
+        return {
+            'deployment_target': self.deployment_target,
+            'max_upload_size_bytes': self.upload_limit_bytes,
+            'max_request_body_bytes': self.request_body_limit_bytes,
+            'pdf_generation_enabled': self.pdf_conversion_enabled,
+        }
+
 
 settings = Settings()

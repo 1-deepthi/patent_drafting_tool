@@ -479,6 +479,7 @@ def document_job_out(doc: dict) -> dict:
         "id": doc["id"],
         "patent_application_id": doc.get("patent_application_id"),
         "status": doc.get("status") or "Queued",
+        "output_format": doc.get("output_format"),
         "triggered_by": doc.get("triggered_by"),
         "retried_from_job_id": doc.get("retried_from_job_id"),
         "error_message": doc.get("error_message"),

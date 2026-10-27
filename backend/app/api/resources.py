@@ -23,9 +23,11 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import StreamingResponse
 
 from app.core.config import settings
 from app.core.firebase import db
+from app.core.limits import upload_limit_detail
 from app.core.security import (
     active_user,
     ensure_permission,
@@ -93,11 +95,23 @@ from app.services.repository import (
     query_docs,
     sort_docs,
 )
-from app.services.storage import StorageError, delete_path, put_bytes, read_bytes
+from app.services.storage import (
+    StorageError,
+    delete_path,
+    open_stream,
+    put_bytes,
+    read_bytes,
+)
 
 router = APIRouter()
 
 DOCUMENT_TYPE = "Patent Application"
+
+
+@router.get("/config/capabilities", tags=["Configuration"])
+def runtime_capabilities():
+    """Public runtime limits; the UI uses these to fail fast and adapt."""
+    return settings.capabilities()
 
 
 # ---------------------------------------------------------------------------
@@ -1139,6 +1153,25 @@ def create_comment(patent_id: str, payload: dict, user: dict = Depends(active_us
 # ---------------------------------------------------------------------------
 
 
+UPLOAD_CHUNK_SIZE = 64 * 1024
+
+
+async def _read_upload(upload: UploadFile) -> bytes:
+    """Read a file with a hard cap, including chunked bodies without a length."""
+    content = bytearray()
+    while True:
+        chunk = await upload.read(UPLOAD_CHUNK_SIZE)
+        if not chunk:
+            break
+        content.extend(chunk)
+        if len(content) > settings.upload_limit_bytes:
+            raise HTTPException(
+                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                upload_limit_detail(),
+            )
+    return bytes(content)
+
+
 def _validate_upload(upload: UploadFile, content: bytes) -> str:
     filename = PurePath(upload.filename or "file").name
     extension = PurePath(filename).suffix.lower()
@@ -1149,10 +1182,10 @@ def _validate_upload(upload: UploadFile, content: bytes) -> str:
         )
     if not content:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "The uploaded file is empty.")
-    if len(content) > settings.max_upload_size_bytes:
+    if len(content) > settings.upload_limit_bytes:
         raise HTTPException(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            f"Files are limited to {settings.max_upload_size_bytes // (1024 * 1024)} MB.",
+            upload_limit_detail(),
         )
     return filename
 
@@ -1162,6 +1195,26 @@ def _storage_guard(operation):
         return operation()
     except StorageError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+
+
+def _chunks(stream, chunk_size: int = UPLOAD_CHUNK_SIZE):
+    try:
+        while True:
+            chunk = stream.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        stream.close()
+
+
+def _stream_response(path: str, media_type: str, headers: dict) -> StreamingResponse:
+    stream = _storage_guard(lambda: open_stream(path))
+    return StreamingResponse(
+        _chunks(stream),
+        media_type=media_type,
+        headers=headers,
+    )
 
 
 @router.get("/patents/{patent_id}/files")
@@ -1181,7 +1234,7 @@ async def upload_file(
 ):
     patent = require_patent(patent_id, user)
     ensure_permission(user, "FILES_UPLOAD")
-    content = await upload.read()
+    content = await _read_upload(upload)
     filename = _validate_upload(upload, content)
     extension = PurePath(filename).suffix.lower()
     path = f"patents/{patent_id}/files/{uuid.uuid4().hex}{extension}"
@@ -1212,11 +1265,10 @@ def download_file(patent_id: str, file_id: str, user: dict = Depends(active_user
     record = get_doc("files", file_id)
     if record.get("patent_application_id") != patent_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
-    content = _storage_guard(lambda: read_bytes(record.get("stored_path") or ""))
-    return Response(
-        content=content,
-        media_type=record.get("mime_type") or "application/octet-stream",
-        headers=_content_disposition(record.get("original_file_name") or "download"),
+    return _stream_response(
+        record.get("stored_path") or "",
+        record.get("mime_type") or "application/octet-stream",
+        _content_disposition(record.get("original_file_name") or "download"),
     )
 
 
@@ -1359,6 +1411,19 @@ def _active_template(document_type: str) -> dict | None:
     )
     active = [doc for doc in templates if doc.get("is_active")]
     return active[0] if active else None
+
+
+def _ensure_format_supported(output_format: str) -> None:
+    """Reject formats this deployment cannot produce before queueing a job."""
+    if output_format not in {"PDF", "DOCX"}:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "output_format must be PDF or DOCX."
+        )
+    if output_format == "PDF" and not settings.pdf_conversion_enabled:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "PDF generation is disabled on this deployment. Generate a DOCX instead.",
+        )
 
 
 def _run_generation(
@@ -1555,10 +1620,7 @@ def generate_document(
             "or Draft Generated.",
         )
     output_format = str(payload.get("output_format") or "DOCX").upper()
-    if output_format not in {"PDF", "DOCX"}:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "output_format must be PDF or DOCX."
-        )
+    _ensure_format_supported(output_format)
     job = _run_generation(patent, output_format, user)
     return document_job_out(job)
 
@@ -1582,6 +1644,7 @@ def retry_document_job(
             status.HTTP_400_BAD_REQUEST, "Only failed jobs can be retried."
         )
     output_format = str(job.get("output_format") or "DOCX").upper()
+    _ensure_format_supported(output_format)
     retried = _run_generation(patent, output_format, user, retried_from_job_id=job_id)
     return document_job_out(retried)
 
@@ -1614,14 +1677,13 @@ def download_document(
     path = document.get("stored_path")
     if not path:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No generated file is available.")
-    content = _storage_guard(lambda: read_bytes(path))
     extension = "pdf" if document.get("output_format") == "PDF" else "docx"
-    return Response(
-        content=content,
-        media_type="application/pdf"
+    return _stream_response(
+        path,
+        "application/pdf"
         if extension == "pdf"
         else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers=_content_disposition(f"patent-document.{extension}"),
+        _content_disposition(f"patent-document.{extension}"),
     )
 
 
@@ -1641,13 +1703,12 @@ def download_document_version(
     path = version.get("storage_path")
     if not path:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No generated file is available.")
-    content = _storage_guard(lambda: read_bytes(path))
-    return Response(
-        content=content,
-        media_type="application/pdf"
+    return _stream_response(
+        path,
+        "application/pdf"
         if extension == "pdf"
         else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers=_content_disposition(
+        _content_disposition(
             f"patent-document-v{version.get('version_number')}.{extension}"
         ),
     )
@@ -1691,7 +1752,7 @@ async def upload_template(
     ensure_permission(user, "TEMPLATES_MANAGE")
     if document_type not in docgen.DOCUMENT_TYPES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown document_type.")
-    content = await upload.read()
+    content = await _read_upload(upload)
     filename = _validate_upload(upload, content)
     if PurePath(filename).suffix.lower() != ".docx":
         raise HTTPException(

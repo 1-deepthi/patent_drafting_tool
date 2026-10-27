@@ -1,8 +1,22 @@
 """Offline smoke tests: the app boots, the contract is mounted, and the
 pure-Python services behave. No Firebase credentials are required.
 """
-from fastapi.testclient import TestClient
+import asyncio
+from io import BytesIO
 
+import pytest
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+from starlette.datastructures import UploadFile
+
+from app.core.config import (
+    DEFAULT_SELF_HOSTED_UPLOAD_BYTES,
+    DEFAULT_VERCEL_UPLOAD_BYTES,
+    MIB,
+    MULTIPART_OVERHEAD_BYTES,
+    VERCEL_BODY_LIMIT_BYTES,
+    Settings,
+)
 from app.services import documents, drafting
 from app.services.rbac import (
     ALL_PERMISSION_IDS,
@@ -16,6 +30,7 @@ from app.services.rbac import (
 # them silently disappears from the API the frontend breaks at runtime, which
 # no type-checker would catch.
 CONTRACT_PATHS = {
+    ("get", "/api/config/capabilities"),
     ("get", "/api/auth/me"),
     ("post", "/api/auth/logout"),
     ("post", "/api/auth/sync"),
@@ -208,3 +223,98 @@ def test_document_context_carries_the_watermark_and_title() -> None:
     assert context["WATERMARK_TEXT"] == documents.WATERMARK_TEXT
     assert context["ABSTRACT"] == "An abstract."
     assert context["CLAIMS"] == "Not generated."
+
+
+# ---------------------------------------------------------------------------
+# Deployment limits
+# ---------------------------------------------------------------------------
+
+
+def test_capabilities_are_public_and_describe_the_limits(client: TestClient) -> None:
+    response = client.get("/api/config/capabilities")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deployment_target"] in {"self_hosted", "vercel"}
+    assert body["max_upload_size_bytes"] > 0
+    assert body["max_request_body_bytes"] >= body["max_upload_size_bytes"]
+    assert isinstance(body["pdf_generation_enabled"], bool)
+
+
+def test_upload_limit_zero_uses_the_profile_default() -> None:
+    local = Settings(
+        deployment_target="self_hosted", max_upload_size_bytes=0, _env_file=None
+    )
+    assert local.upload_limit_bytes == DEFAULT_SELF_HOSTED_UPLOAD_BYTES
+
+    vercel = Settings(
+        deployment_target="vercel", max_upload_size_bytes=0, _env_file=None
+    )
+    assert vercel.upload_limit_bytes == DEFAULT_VERCEL_UPLOAD_BYTES
+
+
+def test_explicit_upload_limits_are_kept_off_vercel() -> None:
+    settings = Settings(
+        deployment_target="self_hosted",
+        max_upload_size_bytes=2 * MIB,
+        _env_file=None,
+    )
+    assert settings.upload_limit_bytes == 2 * MIB
+    assert settings.request_body_limit_bytes == 2 * MIB + MULTIPART_OVERHEAD_BYTES
+
+
+def test_vercel_profile_clamps_explicit_limits_below_the_body_cap() -> None:
+    settings = Settings(
+        deployment_target="vercel",
+        max_upload_size_bytes=10 * MIB,
+        _env_file=None,
+    )
+    assert settings.upload_limit_bytes == (
+        VERCEL_BODY_LIMIT_BYTES - MULTIPART_OVERHEAD_BYTES
+    )
+    assert settings.request_body_limit_bytes == VERCEL_BODY_LIMIT_BYTES
+
+
+def test_request_body_guard_rejects_oversized_uploads(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "max_upload_size_bytes", 1024)
+    response = client.post(
+        "/api/auth/sync",
+        content=b"x" * (MULTIPART_OVERHEAD_BYTES * 2),
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 413
+    assert "too large" in response.json()["detail"]
+
+
+def test_read_upload_stops_one_chunk_past_the_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import resources
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "max_upload_size_bytes", 1024)
+    upload = UploadFile(filename="big.bin", file=BytesIO(b"x" * 4096))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(resources._read_upload(upload))
+    assert exc.value.status_code == 413
+
+
+def test_pdf_gate_rejects_pdf_when_conversion_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import resources
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "pdf_conversion_enabled", False)
+    with pytest.raises(HTTPException) as exc:
+        resources._ensure_format_supported("PDF")
+    assert exc.value.status_code == 400
+    assert "DOCX" in str(exc.value.detail)
+
+    # DOCX still works, and unknown formats stay rejected either way.
+    resources._ensure_format_supported("DOCX")
+    with pytest.raises(HTTPException):
+        resources._ensure_format_supported("ODT")
