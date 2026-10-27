@@ -81,6 +81,9 @@ class RequestBodyLimitMiddleware:
                     await _reject(send)
                     return
             except ValueError:
+                # A malformed Content-Length is not a length we can trust.
+                # Fall through to the byte-counting guard below instead of
+                # rejecting, so a broken header cannot deny a valid request.
                 pass
 
         messages = []
