@@ -603,6 +603,15 @@ def test_gemini_key_is_a_header_and_never_echoed(
     assert seen["headers"]["x-goog-api-key"] == secret
 
 
+def _docx_bytes() -> bytes:
+    from app.services import documents
+
+    return documents._render_builtin(
+        {"invention_title": "Test"},
+        {key: f"Text for {key}" for key, _ in documents.SECTION_ORDER},
+    )
+
+
 def test_upload_allowlist_and_content_sniffing() -> None:
     from app.services import uploads
 
@@ -631,6 +640,27 @@ def test_upload_allowlist_and_content_sniffing() -> None:
         too_big(
             "notes.txt", b"a" * 2048, allowed_extensions=allowed, max_bytes=1024
         )
+
+
+def test_docx_content_is_checked_before_parsing() -> None:
+    import zipfile
+
+    from app.services import uploads
+
+    uploads.assert_safe_docx(_docx_bytes())
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("word/document.xml", "<w:document/>")
+    missing_part = BytesIO()
+    with zipfile.ZipFile(missing_part, "w") as archive:
+        archive.writestr("readme.txt", "not a docx")
+    with pytest.raises(uploads.UploadValidationError) as exc:
+        uploads.assert_safe_docx(missing_part.getvalue())
+    assert "missing" in str(exc.value)
+
+    with pytest.raises(uploads.UploadValidationError):
+        uploads.assert_safe_docx(b"PK\x03\x04not-really-a-zip")
 
 
 def test_request_id_is_echoed_and_untrusted_values_are_replaced(

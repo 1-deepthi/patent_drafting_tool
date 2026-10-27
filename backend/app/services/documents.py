@@ -7,6 +7,7 @@ author's control). PDF output shells out to headless LibreOffice, which the
 Docker image installs.
 """
 import io
+import logging
 import os
 import shutil
 import subprocess
@@ -15,6 +16,11 @@ from pathlib import Path
 
 from docx import Document
 from docx.shared import Pt, RGBColor
+
+from app.core.logging import log_event
+from app.services.uploads import UploadValidationError, assert_safe_docx
+
+logger = logging.getLogger(__name__)
 
 SECTION_ORDER = (
     ("ABSTRACT", "Abstract"),
@@ -122,6 +128,12 @@ def render_docx(patent: dict, sections: dict, template: bytes | None) -> bytes:
     context = build_context(patent, sections)
     if template:
         try:
+            assert_safe_docx(template)
+        except UploadValidationError as exc:
+            raise DocumentGenerationError(
+                f"The active DOCX template failed the safety check: {exc}"
+            ) from exc
+        try:
             from docxtpl import DocxTemplate
 
             document = DocxTemplate(io.BytesIO(template))
@@ -130,8 +142,15 @@ def render_docx(patent: dict, sections: dict, template: bytes | None) -> bytes:
             document.save(buffer)
             return buffer.getvalue()
         except Exception as exc:  # noqa: BLE001
+            log_event(
+                logger,
+                logging.WARNING,
+                "docx_template_render_failed",
+                error_type=type(exc).__name__,
+            )
             raise DocumentGenerationError(
-                f"The active DOCX template could not be rendered: {exc}"
+                "The active DOCX template could not be rendered. "
+                "Ask an administrator to re-upload it."
             ) from exc
     return _render_builtin(patent, sections)
 
@@ -193,5 +212,14 @@ def docx_to_pdf(content: bytes) -> bytes:
             detail = (result.stderr or result.stdout or b"").decode(
                 "utf-8", errors="replace"
             )[:400]
-            raise DocumentGenerationError(f"LibreOffice could not convert the DOCX: {detail}")
+            log_event(
+                logger,
+                logging.WARNING,
+                "libreoffice_conversion_failed",
+                exit_code=result.returncode,
+                detail=detail,
+            )
+            raise DocumentGenerationError(
+                "LibreOffice could not convert the DOCX. Check the server logs."
+            )
         return target.read_bytes()

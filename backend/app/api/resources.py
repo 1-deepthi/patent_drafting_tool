@@ -8,6 +8,7 @@ parallel compatibility layer.
 """
 import csv
 import io
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ from fastapi.responses import StreamingResponse
 from app.core.config import settings
 from app.core.firebase import db
 from app.core.limits import upload_limit_detail
+from app.core.logging import log_event
 from app.core.security import (
     active_user,
     ensure_permission,
@@ -38,6 +40,7 @@ from app.core.security import (
 )
 from app.services import documents as docgen
 from app.services import drafting
+from app.services import uploads
 from app.services.projections import (
     CALENDAR_EVENT_TYPES,
     PRE_ASSIGNMENT_STATUSES,
@@ -105,6 +108,8 @@ from app.services.storage import (
 )
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 DOCUMENT_TYPE = "Patent Application"
 
@@ -1211,26 +1216,41 @@ async def _read_upload(upload: UploadFile) -> bytes:
     return bytes(content)
 
 
-def _validate_upload(upload: UploadFile, content: bytes) -> str:
-    filename = PurePath(upload.filename or "file").name
-    extension = PurePath(filename).suffix.lower()
-    if extension in settings.blocked_extensions:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"{extension} files are not allowed.",
+def _validate_upload(
+    upload: UploadFile,
+    content: bytes,
+    *,
+    allowed: tuple[str, ...] | None = None,
+) -> uploads.ValidatedUpload:
+    try:
+        return uploads.validate_upload(
+            upload.filename or "file",
+            content,
+            allowed_extensions=allowed or settings.allowed_extensions,
+            max_bytes=settings.upload_limit_bytes,
         )
-    if not content:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The uploaded file is empty.")
-    if len(content) > settings.upload_limit_bytes:
-        raise HTTPException(413, upload_limit_detail())  # Content Too Large
-    return filename
+    except uploads.UploadTooLarge as exc:
+        raise HTTPException(413, upload_limit_detail()) from exc
+    except uploads.UploadValidationError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
 def _storage_guard(operation):
     try:
         return operation()
     except StorageError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+        # Storage errors can carry bucket names and upstream status text.
+        # Log the detail and show the caller a stable, non-identifying message.
+        log_event(
+            logger,
+            logging.WARNING,
+            "storage_operation_failed",
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "File storage is temporarily unavailable. Try again later.",
+        ) from exc
 
 
 def _chunks(stream, chunk_size: int = CHUNK_SIZE):
@@ -1271,20 +1291,19 @@ async def upload_file(
     patent = require_patent(patent_id, user)
     ensure_permission(user, "FILES_UPLOAD")
     content = await _read_upload(upload)
-    filename = _validate_upload(upload, content)
-    extension = PurePath(filename).suffix.lower()
-    path = f"patents/{patent_id}/files/{uuid.uuid4().hex}{extension}"
+    validated = _validate_upload(upload, content)
+    path = f"patents/{patent_id}/files/{uuid.uuid4().hex}{validated.extension}"
     _storage_guard(
-        lambda: put_bytes(path, content, upload.content_type or "application/octet-stream")
+        lambda: put_bytes(path, content, validated.mime_type)
     )
     record = create_doc(
         "files",
         {
             "patent_application_id": patent_id,
             "uploaded_by": user["uid"],
-            "original_file_name": filename,
+            "original_file_name": validated.filename,
             "stored_path": path,
-            "mime_type": upload.content_type or "application/octet-stream",
+            "mime_type": validated.mime_type,
             "file_size_bytes": len(content),
         },
     )
@@ -1795,11 +1814,7 @@ async def upload_template(
     if document_type not in docgen.DOCUMENT_TYPES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown document_type.")
     content = await _read_upload(upload)
-    filename = _validate_upload(upload, content)
-    if PurePath(filename).suffix.lower() != ".docx":
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "Only .docx template files are accepted."
-        )
+    validated = _validate_upload(upload, content, allowed=(".docx",))
     unknown, unused, parse_error = docgen.inspect_template(content)
     existing = [
         doc
@@ -1827,7 +1842,7 @@ async def upload_template(
             "document_type": document_type,
             "version_number": version_number,
             "file_path": path,
-            "original_file_name": filename,
+            "original_file_name": validated.filename,
             "is_active": activate,
             "edited_by": user["uid"],
             "unknown_placeholders": unknown,

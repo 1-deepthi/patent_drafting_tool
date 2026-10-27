@@ -35,14 +35,23 @@ class Settings(BaseSettings):
     # runtimes do not ship. Unset means "on except on Vercel"; set it
     # explicitly to override either way.
     pdf_conversion_enabled: bool | None = None
-    blocked_upload_extensions: str = '.exe,.bat,.cmd,.sh,.msi,.com,.dll,.scr,.jar'
+    # Allowlist, not a deny-list: an extension is accepted only when it is
+    # listed here, and the bytes are then checked against the extension.
+    allowed_upload_extensions: str = (
+        '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.csv,.md,.rtf,'
+        '.png,.jpg,.jpeg,.gif,.webp,.tif,.tiff'
+    )
     gemini_api_key: str = ''
     gemini_model: str = 'gemini-2.0-flash'
     ai_provider: str = 'stub'
 
     @property
-    def blocked_extensions(self) -> tuple[str, ...]:
-        return tuple(x.strip().lower() for x in self.blocked_upload_extensions.split(',') if x.strip())
+    def allowed_extensions(self) -> tuple[str, ...]:
+        return tuple(
+            item.strip().lower()
+            for item in self.allowed_upload_extensions.split(',')
+            if item.strip()
+        )
 
     @property
     def upload_limit_bytes(self) -> int:
