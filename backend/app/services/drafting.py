@@ -5,9 +5,13 @@ a clearly labelled draft. `AI_PROVIDER=gemini` plus `GEMINI_API_KEY` uses the
 Gemini REST API through httpx. Generated text is a drafting aid, never legal
 advice.
 """
+import logging
+
 import httpx
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 DRAFT_WARNING = (
     "DRAFT ONLY — this text was generated as a drafting aid and is not legal "
@@ -102,15 +106,30 @@ def _gemini_text(patent: dict, questionnaire: dict, section: str) -> str:
     try:
         response = httpx.post(
             url,
-            params={"key": settings.gemini_api_key},
+            # The key goes in a header, never the query string: httpx puts the
+            # full URL in HTTPStatusError, which would leak the key into API
+            # responses and logs.
+            headers={"x-goog-api-key": settings.gemini_api_key},
             json={"contents": [{"parts": [{"text": prompt}]}]},
             timeout=60.0,
         )
         response.raise_for_status()
         payload = response.json()
         text = payload["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Gemini request failed with HTTP %s", exc.response.status_code
+        )
+        raise AIGenerationError(
+            f"Gemini request failed with HTTP {exc.response.status_code}."
+        ) from exc
     except Exception as exc:  # noqa: BLE001 - provider errors become API 502s
-        raise AIGenerationError(f"Gemini request failed: {exc}") from exc
+        # Do not interpolate the exception: httpx error strings can contain the
+        # request URL, and provider responses can echo request details.
+        logger.warning("Gemini request failed: %s", type(exc).__name__)
+        raise AIGenerationError(
+            "Gemini request failed. Check the API key and model configuration."
+        ) from exc
     if DRAFT_WARNING not in text:
         text = f"{text}\n\n{DRAFT_WARNING}"
     return text
