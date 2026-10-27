@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime capability probe (`GET /api/config/capabilities`) and configurable deployment limits: `DEPLOYMENT_TARGET`, `MAX_UPLOAD_SIZE_BYTES`, and `PDF_CONVERSION_ENABLED`. The frontend pre-checks upload sizes and hides PDF generation when the deployment cannot run LibreOffice.
 - Inline `FIREBASE_SERVICE_ACCOUNT_JSON` credentials for hosts without a mountable secret file, such as Vercel.
 - Checked-in `firebase.json`, `firestore.rules`, and `storage.rules`: the browser uses Firebase Auth only, and direct Firestore/Storage access is denied because the backend Admin SDK is the only data path.
+- Upload allowlist (`ALLOWED_UPLOAD_EXTENSIONS`) plus magic-byte content sniffing; Office containers are checked for their required part and bounded against ZIP bombs (`backend/app/services/uploads.py`).
+- Content-Security-Policy on API responses and the nginx frontend, and HSTS in production; the backend exempts Swagger/ReDoc paths so the docs stay usable.
+- Profile-field validation (`/api/auth/sync`): per-field length bounds, string-only values, control-character rejection, and an http(s)-only `profile_picture`.
+- Abandoned `Processing` document jobs are reaped into `Failed` after 15 minutes so the UI can retry them.
 
 ### Changed
 
@@ -46,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Docker workflow used the non-existent `docker/build-action` (failed at "Set up job") — corrected to `docker/build-push-action`; action existence is verified before merging workflow changes.
 - Frontend no longer crashes at import time when Firebase Web SDK values are missing; it renders a configuration error on the login screen instead.
+- Document/template version numbers are claimed through a Firestore transaction, so two concurrent generations can no longer compute the same `vN` and overwrite each other.
+- Unexpected generation failures store a stable message on the job instead of echoing exception text; curated `DocumentGenerationError` messages still reach the UI.
+- `PendingApprovalPage` stops polling once the session is no longer pending, `ProtectedRoute` uses the shared `LoadingState`, and the PDF button stays disabled until capabilities load.
+- Sign-in failures show the mapped Firebase hint plus the raw error code when it is unrecognised, and an API session that cannot be described renders an alert instead of silently returning to the login screen.
+- The nginx `/assets/` location repeats the security headers; nginx drops inherited `add_header` directives in a location that declares its own.
 
 ### Known gaps (tracked, not yet fixed)
 

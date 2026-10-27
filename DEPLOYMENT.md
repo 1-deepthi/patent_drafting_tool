@@ -65,7 +65,7 @@ production (`pydantic-settings`; see `backend/app/core/config.py`). Set:
 | `DEPLOYMENT_TARGET` | `self_hosted`, or `vercel` (see the Vercel notes) |
 | `MAX_UPLOAD_SIZE_BYTES` | `0` for the profile default (10 MiB self-hosted, 4 MiB Vercel); lower it to restrict uploads further |
 | `PDF_CONVERSION_ENABLED` | Unset = on except on Vercel; set `true`/`false` to override |
-| `BLOCKED_UPLOAD_EXTENSIONS` | Keep the default deny-list |
+| `ALLOWED_UPLOAD_EXTENSIONS` | Keep the default allowlist; remove types you do not need |
 | `AI_PROVIDER` | `stub` unless you intend to pay for Gemini |
 | `GEMINI_API_KEY` | Only when `AI_PROVIDER=gemini`; store as a secret |
 

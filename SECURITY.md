@@ -61,10 +61,19 @@ Current controls (Firebase runtime):
   (`backend/app/services/projections.py`).
 - **Account gating:** new users are `pending` until approved; the bootstrap
   admin is a single configured email.
-- **Upload validation:** non-empty content, `MAX_UPLOAD_SIZE_BYTES` cap, and
-  `BLOCKED_UPLOAD_EXTENSIONS` deny-list; templates are restricted to `.docx`.
+- **Upload validation:** non-empty content, `MAX_UPLOAD_SIZE_BYTES` cap, an
+  `ALLOWED_UPLOAD_EXTENSIONS` allowlist, and content sniffing (magic bytes)
+  so a renamed executable cannot pass as a PDF or image. Office containers
+  are checked for the required part and rejected when they exceed the ZIP
+  bomb limits (entry count, entry size, total size, compression ratio, or
+  encryption). The stored MIME type comes from the validated extension, not
+  from the client. Templates are restricted to `.docx`.
 - **Transport:** CORS allow-list (`CORS_ORIGINS`), trusted hosts
-  (`ALLOWED_HOSTS`), HTTPS required in production.
+  (`ALLOWED_HOSTS`), HTTPS required in production, HSTS in production only,
+  and a strict CSP on API responses (Swagger/ReDoc exempt).
+- **Observability:** every response carries an `X-Request-ID` that is either a
+  safe client value or a generated hex ID, and application logs are JSON lines
+  carrying that ID and the event name.
 - **Storage:** the service-account JSON is mounted/injected at run time and is
   git-ignored. Blobs are served through the API, not public bucket URLs.
 - **Deployment:** one backend replica, platform-level rate limiting, and a

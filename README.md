@@ -322,7 +322,7 @@ Copy from `backend/.env.example`. Never commit `.env` or `secrets/`.
 | `DEPLOYMENT_TARGET` | No | `self_hosted` | `self_hosted` \| `vercel` (clamps uploads below Vercel's 4.5 MB cap) |
 | `MAX_UPLOAD_SIZE_BYTES` | No | `0` (profile default) | Per-file cap; `0` = 10 MiB self-hosted / 4 MiB Vercel; explicit values are clamped on Vercel |
 | `PDF_CONVERSION_ENABLED` | No | _(unset)_ | `true`/`false`; unset = on except on Vercel, and the API still reports PDF off when LibreOffice is missing |
-| `BLOCKED_UPLOAD_EXTENSIONS` | No | `.exe,.bat,.cmd,.sh,.msi,.com,.dll,.scr,.jar` | Blocked upload types |
+| `ALLOWED_UPLOAD_EXTENSIONS` | No | `.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.csv,.md,.rtf,.png,.jpg,.jpeg,.gif,.webp,.tif,.tiff` | Upload allowlist; content is sniffed against the extension |
 | `AI_PROVIDER` | No | `stub` | `stub` (placeholder) \| `gemini` (real drafting) |
 | `GEMINI_API_KEY` | If `AI_PROVIDER=gemini` | _(empty)_ | Google AI API key |
 | `GEMINI_MODEL` | No | `gemini-2.0-flash` | Gemini model ID |
