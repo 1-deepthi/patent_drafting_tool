@@ -236,6 +236,10 @@ def toggle_report_permission(role_id: int, report_type: str, grant: bool) -> dic
         raise ValueError("Admin and Super Admin can always download reports.")
     if role_id not in ROLE_BY_ID or report_type not in REPORT_TYPE_NAMES:
         raise ValueError("Unknown role or report type.")
+    if report_type == "users":
+        raise ValueError(
+            "The users report is restricted to Admin and Super Admin roles."
+        )
     create_doc(
         "report_permission_overrides",
         {"role_id": role_id, "report_type": report_type, "granted": bool(grant)},

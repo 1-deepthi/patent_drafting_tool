@@ -28,6 +28,10 @@ SECTION_LABELS = {
     "CLAIMS": "Claims",
 }
 
+# A draft output lands in one Firestore document (1 MiB cap). Leaving the
+# provider's response unbounded would let one call exceed the document limit.
+MAX_OUTPUT_CHARS = 60_000
+
 
 class AIGenerationError(RuntimeError):
     pass
@@ -143,5 +147,20 @@ def generate_section(
         raise AIGenerationError(f"Unknown section type: {section}")
     provider = (settings.ai_provider or "stub").lower()
     if provider == "gemini" and settings.gemini_api_key:
-        return _gemini_text(patent, questionnaire, section), "gemini", settings.gemini_model
-    return _stub_text(patent, questionnaire, section), "stub", None
+        text, used_provider, model = (
+            _gemini_text(patent, questionnaire, section),
+            "gemini",
+            settings.gemini_model,
+        )
+    else:
+        text, used_provider, model = (
+            _stub_text(patent, questionnaire, section),
+            "stub",
+            None,
+        )
+    if len(text) > MAX_OUTPUT_CHARS:
+        raise AIGenerationError(
+            "The generated draft exceeded the maximum length. Shorten the "
+            "questionnaire or regenerate one section at a time."
+        )
+    return text, used_provider, model

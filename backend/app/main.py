@@ -1,4 +1,6 @@
+import logging
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,8 +16,30 @@ from app.api.resources import router as resources_router
 
 configure_logging()
 
+logger = logging.getLogger(__name__)
+
+
+def warn_insecure_hosts() -> None:
+    """Warn when a production deployment accepts any Host header.
+
+    `TrustedHostMiddleware` cannot defend against Host-header attacks when
+    `ALLOWED_HOSTS=*`, and the permissive default is easy to ship by accident.
+    """
+    hosts = [
+        value.strip()
+        for value in settings.allowed_hosts.split(',')
+        if value.strip()
+    ]
+    if settings.environment == 'production' and (not hosts or '*' in hosts):
+        logger.warning(
+            "ALLOWED_HOSTS accepts every Host header in production. Set it to "
+            "the deployed API host(s) so Host-header attacks cannot reach the app."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    warn_insecure_hosts()
     # Keep startup usable before credentials are configured; /health reports setup status.
     try:
         initialize_firebase()

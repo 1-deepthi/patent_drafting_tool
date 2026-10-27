@@ -15,7 +15,7 @@ from app.core.security import (
     is_super_admin,
     permissions_for,
 )
-from app.services.projections import user_out
+from app.services.projections import log_activity, user_out
 from app.services.rbac import ALL_ROLE_CODES
 from app.services.repository import get_doc, list_docs, now_iso, sort_docs
 
@@ -175,6 +175,7 @@ def approve_user(
     target.update(
         {"account_status": "approved", "role_codes": sorted(set(role_codes))}
     )
+    log_activity(user["uid"], "UserApproved", "User", user_id)
     return user_out(target)
 
 
@@ -184,7 +185,17 @@ def reject_user(
 ):
     if not is_super_admin(user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin access required.")
+    if user_id == user["uid"]:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "You cannot reject your own account.",
+        )
     target = get_doc("users", user_id)
+    if "SUPER_ADMIN" in (target.get("role_codes") or []):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Revoke the Super Admin role before rejecting this account.",
+        )
     db().collection("users").document(user_id).set(
         {
             "account_status": "rejected",
@@ -195,4 +206,5 @@ def reject_user(
         merge=True,
     )
     target.update({"account_status": "rejected"})
+    log_activity(user["uid"], "UserRejected", "User", user_id)
     return user_out(target)

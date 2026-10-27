@@ -207,11 +207,113 @@ def _parse_iso(value: str) -> str:
     return parsed.isoformat()
 
 
-def _clean_text(value) -> str | None:
+# Firestore caps a document at 1 MiB. These bounds keep every text field far
+# below that, reject non-string payloads instead of stringifying them, and stop
+# control characters from reaching stored text or CSV exports.
+# USPTO titles are capped at 500 characters (37 CFR 1.72(a)); this is a
+# little above typical drafting guidance and still far below a Firestore doc.
+MAX_TITLE_CHARS = 500
+APPLICANT_TEXT_LIMITS = {
+    "full_name_or_org_name": 200,
+    "address": 500,
+    "country": 80,
+    "postal_code": 32,
+    "email": 254,
+    "phone": 40,
+}
+INVENTOR_TEXT_LIMITS = {
+    "full_name": 200,
+    "address": 500,
+    "country": 80,
+    "postal_code": 32,
+    "email": 254,
+    "phone": 40,
+}
+QUESTIONNAIRE_TEXT_LIMITS = {
+    "invention_type": 80,
+    "problem_statement": 20_000,
+    "proposed_solution": 20_000,
+    "novelty_description": 20_000,
+    "technical_description": 20_000,
+    "advantages": 20_000,
+    "prior_art": 20_000,
+    "keywords": 2_000,
+}
+MULTILINE_FIELDS = {"address"}
+
+
+def _bounded_text(
+    value, field: str, limit: int, *, allow_newlines: bool = False
+) -> str | None:
+    """Return a stripped string, or reject it with a 422.
+
+    `None` and blank strings mean "clear this field". Anything else must be a
+    string within `limit`; newlines and tabs are only accepted where the field
+    is expected to be multi-line.
+    """
     if value is None:
         return None
-    text = str(value).strip()
-    return text or None
+    if not isinstance(value, str):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{field} must be a string.",
+        )
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) > limit:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{field} must be at most {limit} characters.",
+        )
+    allowed_controls = {"\n", "\r", "\t"} if allow_newlines else set()
+    if any(
+        (ord(char) < 32 or ord(char) == 127) and char not in allowed_controls
+        for char in text
+    ):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{field} must not contain control characters.",
+        )
+    return text
+
+
+def _party_texts(
+    payload: dict, limits: dict[str, int], *, only_present: bool
+) -> dict[str, str | None]:
+    return {
+        field: _bounded_text(
+            payload.get(field),
+            field,
+            limit,
+            allow_newlines=field in MULTILINE_FIELDS,
+        )
+        for field, limit in limits.items()
+        if not only_present or field in payload
+    }
+
+
+def _questionnaire_patch(payload: dict) -> dict:
+    data: dict = {}
+    for field in QUESTIONNAIRE_FIELDS:
+        if field not in payload:
+            continue
+        if field == "has_existing_drawings":
+            value = payload[field]
+            if value is not None and not isinstance(value, bool):
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "has_existing_drawings must be a boolean.",
+                )
+            data[field] = value
+            continue
+        data[field] = _bounded_text(
+            payload[field],
+            field,
+            QUESTIONNAIRE_TEXT_LIMITS[field],
+            allow_newlines=True,
+        )
+    return data
 
 
 def _agent_or_404(agent_id: str) -> dict:
@@ -451,7 +553,9 @@ def list_patents(user: dict = Depends(active_user)):
 @router.post("/patents", status_code=status.HTTP_201_CREATED)
 def create_patent(payload: dict, user: dict = Depends(active_user)):
     ensure_permission(user, "PATENTS_CREATE")
-    title = (payload.get("invention_title") or "").strip()
+    title = _bounded_text(
+        payload.get("invention_title"), "invention_title", MAX_TITLE_CHARS
+    )
     team_id = payload.get("team_id")
     if not title:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invention_title is required.")
@@ -697,14 +801,6 @@ APPLICANT_FIELDS = (
     "phone",
     "is_primary",
 )
-INVENTOR_FIELDS = (
-    "full_name",
-    "address",
-    "country",
-    "postal_code",
-    "email",
-    "phone",
-)
 
 
 def _apply_primary(patent_id: str, keep_id: str) -> None:
@@ -731,7 +827,8 @@ def create_applicant(patent_id: str, payload: dict, user: dict = Depends(active_
     applicant_type = payload.get("applicant_type") or "Individual"
     if applicant_type not in APPLICANT_TYPES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown applicant_type.")
-    name = (payload.get("full_name_or_org_name") or "").strip()
+    texts = _party_texts(payload, APPLICANT_TEXT_LIMITS, only_present=False)
+    name = texts.pop("full_name_or_org_name")
     if not name:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "full_name_or_org_name is required."
@@ -741,11 +838,7 @@ def create_applicant(patent_id: str, payload: dict, user: dict = Depends(active_
         "patent_application_id": patent_id,
         "applicant_type": applicant_type,
         "full_name_or_org_name": name,
-        "address": _clean_text(payload.get("address")),
-        "country": _clean_text(payload.get("country")),
-        "postal_code": _clean_text(payload.get("postal_code")),
-        "email": _clean_text(payload.get("email")),
-        "phone": _clean_text(payload.get("phone")),
+        **texts,
         "is_primary": bool(payload.get("is_primary")) or not existing,
         "display_order": len(existing),
     }
@@ -770,16 +863,11 @@ def update_applicant(
     data = {key: payload[key] for key in APPLICANT_FIELDS if key in payload}
     if "applicant_type" in data and data["applicant_type"] not in APPLICANT_TYPES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown applicant_type.")
-    if "full_name_or_org_name" in data:
-        name = (data.get("full_name_or_org_name") or "").strip()
-        if not name:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST, "full_name_or_org_name is required."
-            )
-        data["full_name_or_org_name"] = name
-    for field in ("address", "country", "postal_code", "email", "phone"):
-        if field in data:
-            data[field] = _clean_text(data[field])
+    data.update(_party_texts(payload, APPLICANT_TEXT_LIMITS, only_present=True))
+    if "full_name_or_org_name" in data and not data["full_name_or_org_name"]:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "full_name_or_org_name is required."
+        )
     if data.get("is_primary") is False and applicant.get("is_primary"):
         others = [
             doc
@@ -846,19 +934,15 @@ def list_inventors(patent_id: str, user: dict = Depends(active_user)):
 def create_inventor(patent_id: str, payload: dict, user: dict = Depends(active_user)):
     patent = require_patent(patent_id, user)
     _assert_basic_info_editable(patent, user)
-    name = (payload.get("full_name") or "").strip()
+    texts = _party_texts(payload, INVENTOR_TEXT_LIMITS, only_present=False)
+    name = texts["full_name"]
     if not name:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "full_name is required.")
     existing = _ordered_items("inventors", patent_id, "inventor_order")
     data = {
         "patent_application_id": patent_id,
         "user_id": payload.get("user_id"),
-        "full_name": name,
-        "address": _clean_text(payload.get("address")),
-        "country": _clean_text(payload.get("country")),
-        "postal_code": _clean_text(payload.get("postal_code")),
-        "email": _clean_text(payload.get("email")),
-        "phone": _clean_text(payload.get("phone")),
+        **texts,
         "inventor_order": len(existing),
     }
     created = create_doc("inventors", data)
@@ -877,15 +961,9 @@ def update_inventor(
     inventor = get_doc("inventors", inventor_id)
     if inventor.get("patent_application_id") != patent_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Inventor not found.")
-    data = {key: payload[key] for key in INVENTOR_FIELDS if key in payload}
-    if "full_name" in data:
-        name = (data.get("full_name") or "").strip()
-        if not name:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "full_name is required.")
-        data["full_name"] = name
-    for field in ("address", "country", "postal_code", "email", "phone"):
-        if field in data:
-            data[field] = _clean_text(data[field])
+    data = _party_texts(payload, INVENTOR_TEXT_LIMITS, only_present=True)
+    if "full_name" in data and not data["full_name"]:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "full_name is required.")
     return inventor_out(patch_doc("inventors", inventor_id, data))
 
 
@@ -941,7 +1019,7 @@ def update_questionnaire(
     patent = require_patent(patent_id, user)
     _assert_basic_info_editable(patent, user)
     questionnaire = _questionnaire(patent_id)
-    data = {key: payload[key] for key in QUESTIONNAIRE_FIELDS if key in payload}
+    data = _questionnaire_patch(payload)
     merged = {**questionnaire, **data}
     if merged.get("questionnaire_status") == "Completed":
         merged["questionnaire_status"] = "In Progress"
@@ -1408,6 +1486,7 @@ def delete_calendar_event(
             status.HTTP_403_FORBIDDEN,
             "Only the assigned Patent Agent or an Admin can delete calendar events.",
         )
+    ensure_permission(user, "CALENDAR_MANAGE")
     event = get_doc("calendar_events", event_id)
     if event.get("patent_application_id") != patent_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Calendar event not found.")
@@ -2101,7 +2180,20 @@ def dashboard(user: dict = Depends(active_user)):
     }
 
 
+def _assert_report_access(report_type: str, user: dict) -> None:
+    """The users report exposes every account, so it stays admin-only.
+
+    The grant matrix controls downloads; it must not be able to widen this
+    report to Innovators or Patent Agents.
+    """
+    if report_type == "users" and not is_admin(user):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Admin access required for the users report."
+        )
+
+
 def _report_rows(report_type: str, user: dict) -> list[dict]:
+    _assert_report_access(report_type, user)
     patents = {
         doc["id"]: doc for doc in visible_patents(user)
     }
@@ -2184,11 +2276,13 @@ def report_permission_toggle(
     if not is_super_admin(user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin access required.")
     try:
-        return toggle_report_permission(
-            int(payload.get("role_id")), str(payload.get("report_type")), grant
-        )
+        role_id = int(payload.get("role_id"))
+        report_type = str(payload.get("report_type"))
+        result = toggle_report_permission(role_id, report_type, grant)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    log_activity(user["uid"], "ReportPermissionToggled", "Role", str(role_id))
+    return result
 
 
 @router.get("/reports")
@@ -2203,6 +2297,7 @@ def report_catalog(user: dict = Depends(active_user)):
             ),
         }
         for row in REPORT_TYPES
+        if row["report_type"] != "users" or is_admin(user)
     ]
 
 
@@ -2211,6 +2306,7 @@ def export_report(report_type: str, user: dict = Depends(active_user)):
     ensure_permission(user, "REPORTS_VIEW")
     if report_type not in REPORT_TYPE_NAMES:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown report type.")
+    _assert_report_access(report_type, user)
     if not can_download_report(
         user, report_type, has_permission(user, "REPORTS_DOWNLOAD")
     ):
@@ -2241,6 +2337,7 @@ def run_report(report_type: str, user: dict = Depends(active_user)):
     ensure_permission(user, "REPORTS_VIEW")
     if report_type not in REPORT_TYPE_NAMES:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown report type.")
+    _assert_report_access(report_type, user)
     rows = _report_rows(report_type, user)
     meta = next(row for row in REPORT_TYPES if row["report_type"] == report_type)
     return {
@@ -2271,11 +2368,13 @@ def rbac_toggle(
     if not is_super_admin(user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin access required.")
     try:
-        return toggle_grant(
-            int(payload.get("role_id")), int(payload.get("permission_id")), grant
-        )
+        role_id = int(payload.get("role_id"))
+        permission_id = int(payload.get("permission_id"))
+        result = toggle_grant(role_id, permission_id, grant)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    log_activity(user["uid"], "PermissionToggled", "Role", str(role_id))
+    return result
 
 
 @router.get("/rbac/users")
@@ -2308,6 +2407,7 @@ def assign_role(target_id: str, payload: dict, user: dict = Depends(active_user)
     roles = set(target.get("role_codes") or [])
     roles.add(role_code)
     patch_doc("users", target_id, {"role_codes": sorted(roles)})
+    log_activity(user["uid"], "RoleAssigned", "User", target_id)
     return user_out(get_doc("users", target_id))
 
 
@@ -2333,4 +2433,5 @@ def revoke_role(target_id: str, role_code: str, user: dict = Depends(active_user
             status.HTTP_400_BAD_REQUEST, "Every user must keep at least one role."
         )
     patch_doc("users", target_id, {"role_codes": sorted(roles)})
+    log_activity(user["uid"], "RoleRevoked", "User", target_id)
     return user_out(get_doc("users", target_id))

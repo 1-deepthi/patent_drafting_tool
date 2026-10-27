@@ -776,3 +776,220 @@ def test_firebase_recovers_from_a_failed_client_initialisation(
         assert firebase._db == "db-sentinel"
     finally:
         firebase._app, firebase._db, firebase._bucket = original
+
+
+def test_resource_text_fields_are_bounded_and_typed() -> None:
+    from app.api import resources
+
+    assert resources._bounded_text("  Ada  ", "full_name", 10) == "Ada"
+    assert resources._bounded_text(None, "full_name", 10) is None
+    assert resources._bounded_text("   ", "full_name", 10) is None
+    assert (
+        resources._bounded_text(
+            "line one\nline two", "address", 100, allow_newlines=True
+        )
+        == "line one\nline two"
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        resources._bounded_text("x" * 11, "full_name", 10)
+    assert exc.value.status_code == 422
+
+    with pytest.raises(HTTPException):
+        resources._bounded_text({"nested": "no"}, "full_name", 10)
+
+    with pytest.raises(HTTPException):
+        resources._bounded_text("line one\nline two", "full_name", 100)
+
+    texts = resources._party_texts(
+        {"full_name": " Ada ", "address": "A\nB"},
+        resources.INVENTOR_TEXT_LIMITS,
+        only_present=True,
+    )
+    assert texts == {"full_name": "Ada", "address": "A\nB"}
+
+    with pytest.raises(HTTPException):
+        resources._party_texts(
+            {"email": 42}, resources.INVENTOR_TEXT_LIMITS, only_present=True
+        )
+
+    questionnaire = resources._questionnaire_patch(
+        {"problem_statement": "  A problem  ", "keywords": "a, b"}
+    )
+    assert questionnaire == {
+        "problem_statement": "A problem",
+        "keywords": "a, b",
+    }
+
+    limit = resources.QUESTIONNAIRE_TEXT_LIMITS["problem_statement"]
+    with pytest.raises(HTTPException) as q_exc:
+        resources._questionnaire_patch({"problem_statement": "x" * (limit + 1)})
+    assert q_exc.value.status_code == 422
+
+    with pytest.raises(HTTPException):
+        resources._questionnaire_patch({"has_existing_drawings": "yes"})
+
+
+def test_calendar_delete_checks_the_manage_permission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import resources
+
+    checked: list[str] = []
+    monkeypatch.setattr(resources, "require_patent", lambda *args: {"id": "p1"})
+    monkeypatch.setattr(resources, "_can_manage_calendar", lambda *args: True)
+
+    def deny(user, code):
+        checked.append(code)
+        raise HTTPException(403, "denied")
+
+    monkeypatch.setattr(resources, "ensure_permission", deny)
+
+    with pytest.raises(HTTPException) as exc:
+        resources.delete_calendar_event(
+            "p1", "e1", {"uid": "u1", "role_codes": []}
+        )
+    assert exc.value.status_code == 403
+    assert checked == ["CALENDAR_MANAGE"]
+
+
+def test_users_report_stays_admin_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.api import resources
+    from app.services import rbac
+
+    admin = {"uid": "admin", "role_codes": ["ADMIN"]}
+    innovator = {"uid": "u1", "role_codes": ["INNOVATOR"]}
+
+    monkeypatch.setattr(resources, "ensure_permission", lambda *args: None)
+    monkeypatch.setattr(resources, "has_permission", lambda *args: True)
+    monkeypatch.setattr(resources, "can_download_report", lambda *args: True)
+    monkeypatch.setattr(
+        resources, "is_admin", lambda user: "ADMIN" in user["role_codes"]
+    )
+
+    innovator_rows = resources.report_catalog(innovator)
+    assert "users" not in {row["report_type"] for row in innovator_rows}
+
+    admin_rows = resources.report_catalog(admin)
+    assert "users" in {row["report_type"] for row in admin_rows}
+
+    with pytest.raises(HTTPException) as exc:
+        resources._assert_report_access("users", innovator)
+    assert exc.value.status_code == 403
+    resources._assert_report_access("users", admin)
+
+    with pytest.raises(ValueError):
+        rbac.toggle_report_permission(3, "users", True)
+
+
+def test_reject_user_blocks_self_and_super_admins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import auth
+
+    monkeypatch.setattr(auth, "is_super_admin", lambda user: True)
+
+    with pytest.raises(HTTPException) as self_exc:
+        auth.reject_user(
+            "u1", None, {"uid": "u1", "role_codes": ["SUPER_ADMIN"]}
+        )
+    assert self_exc.value.status_code == 400
+
+    monkeypatch.setattr(
+        auth,
+        "get_doc",
+        lambda collection, uid: {"id": uid, "role_codes": ["SUPER_ADMIN"]},
+    )
+    with pytest.raises(HTTPException) as admin_exc:
+        auth.reject_user(
+            "u2", None, {"uid": "u1", "role_codes": ["SUPER_ADMIN"]}
+        )
+    assert admin_exc.value.status_code == 400
+
+
+def test_approval_rejection_and_role_changes_are_audited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import auth, resources
+
+    audit: list[tuple] = []
+    writes: list[dict] = []
+
+    class FakeDocument:
+        def set(self, data, merge=False):
+            writes.append(data)
+
+    class FakeCollection:
+        def document(self, _id):
+            return FakeDocument()
+
+    class FakeDB:
+        def collection(self, _name):
+            return FakeCollection()
+
+    target = {
+        "id": "u2",
+        "email": "new@example.com",
+        "full_name": "New User",
+        "role_codes": ["INNOVATOR", "PATENT_AGENT"],
+        "account_status": "pending",
+    }
+    admin = {"uid": "admin", "role_codes": ["SUPER_ADMIN"]}
+
+    monkeypatch.setattr(auth, "is_super_admin", lambda user: True)
+    monkeypatch.setattr(auth, "get_doc", lambda *args: dict(target))
+    monkeypatch.setattr(auth, "db", lambda: FakeDB())
+    monkeypatch.setattr(auth, "log_activity", lambda *args: audit.append(args))
+
+    auth.approve_user("u2", {"role_codes": ["INNOVATOR"]}, admin)
+    auth.reject_user("u2", None, admin)
+
+    monkeypatch.setattr(resources, "is_super_admin", lambda user: True)
+    monkeypatch.setattr(resources, "get_doc", lambda *args: dict(target))
+    monkeypatch.setattr(resources, "patch_doc", lambda *args: None)
+    monkeypatch.setattr(
+        resources, "log_activity", lambda *args: audit.append(args)
+    )
+
+    resources.assign_role("u2", {"role_code": "ADMIN"}, admin)
+    resources.revoke_role("u2", "INNOVATOR", admin)
+
+    assert ("admin", "UserApproved", "User", "u2") in audit
+    assert ("admin", "UserRejected", "User", "u2") in audit
+    assert ("admin", "RoleAssigned", "User", "u2") in audit
+    assert ("admin", "RoleRevoked", "User", "u2") in audit
+    assert len(writes) == 2
+
+
+def test_ai_output_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import drafting
+
+    monkeypatch.setattr(
+        drafting,
+        "_stub_text",
+        lambda *args: "x" * (drafting.MAX_OUTPUT_CHARS + 1),
+    )
+    with pytest.raises(drafting.AIGenerationError):
+        drafting.generate_section({"invention_title": "Test"}, {}, "ABSTRACT")
+
+
+def test_production_warns_when_allowed_hosts_is_wildcard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import main
+    from app.core.config import settings
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        main.logger, "warning", lambda message, *args: warnings.append(message)
+    )
+
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "allowed_hosts", "*")
+    main.warn_insecure_hosts()
+    assert any("ALLOWED_HOSTS" in message for message in warnings)
+
+    warnings.clear()
+    monkeypatch.setattr(settings, "allowed_hosts", "api.example.com")
+    main.warn_insecure_hosts()
+    assert not warnings
