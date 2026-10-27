@@ -1986,8 +1986,14 @@ def report_permission_toggle(
 @router.get("/reports")
 def report_catalog(user: dict = Depends(active_user)):
     ensure_permission(user, "REPORTS_VIEW")
+    allowed = has_permission(user, "REPORTS_DOWNLOAD")
     return [
-        {**row, "can_download": can_download_report(user, row["report_type"])}
+        {
+            **row,
+            "can_download": can_download_report(
+                user, row["report_type"], allowed
+            ),
+        }
         for row in REPORT_TYPES
     ]
 
@@ -1997,7 +2003,9 @@ def export_report(report_type: str, user: dict = Depends(active_user)):
     ensure_permission(user, "REPORTS_VIEW")
     if report_type not in REPORT_TYPE_NAMES:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown report type.")
-    if not can_download_report(user, report_type):
+    if not can_download_report(
+        user, report_type, has_permission(user, "REPORTS_DOWNLOAD")
+    ):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "Your role is not permitted to download this report.",

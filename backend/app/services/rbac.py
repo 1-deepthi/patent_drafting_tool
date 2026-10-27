@@ -254,12 +254,14 @@ def report_type_granted(user: dict, report_type: str) -> bool:
     return False
 
 
-def can_download_report(user: dict, report_type: str) -> bool:
-    if is_admin_like(user):
-        return True
-    # Imported lazily: security imports this module only inside a function.
-    from app.core.security import has_permission
+def can_download_report(
+    user: dict, report_type: str, has_download_permission: bool
+) -> bool:
+    """Whether the caller may download one report type.
 
-    if not has_permission(user, "REPORTS_DOWNLOAD"):
-        return False
-    return report_type_granted(user, report_type)
+    `has_download_permission` carries the caller's REPORTS_DOWNLOAD decision
+    so this module never imports core.security (which would create a cycle).
+    """
+    if is_admin_like(user) or has_download_permission:
+        return report_type_granted(user, report_type)
+    return False
