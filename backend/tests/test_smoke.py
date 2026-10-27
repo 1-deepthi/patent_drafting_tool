@@ -663,6 +663,34 @@ def test_docx_content_is_checked_before_parsing() -> None:
         uploads.assert_safe_docx(b"PK\x03\x04not-really-a-zip")
 
 
+def test_profile_fields_are_bounded_and_typed() -> None:
+    from app.api import auth
+
+    assert auth._profile_patch({"full_name": "  Ada Lovelace  "}) == {
+        "full_name": "Ada Lovelace"
+    }
+    assert auth._profile_patch({"bio": "line one\nline two"}) == {
+        "bio": "line one\nline two"
+    }
+    assert auth._profile_patch({"profile_picture": ""}) == {"profile_picture": ""}
+
+    with pytest.raises(HTTPException) as exc:
+        auth._profile_patch({"full_name": "x" * (auth.PROFILE_FIELD_LIMITS["full_name"] + 1)})
+    assert exc.value.status_code == 422
+
+    with pytest.raises(HTTPException):
+        auth._profile_patch({"organization": {"nested": "no"}})
+
+    with pytest.raises(HTTPException):
+        auth._profile_patch({"full_name": "bad\x00name"})
+
+    with pytest.raises(HTTPException):
+        auth._profile_patch({"profile_picture": "javascript:alert(1)"})
+
+    # Unknown keys are ignored rather than written through to Firestore.
+    assert auth._profile_patch({"account_status": "approved"}) == {}
+
+
 def test_unexpected_generation_errors_are_not_echoed() -> None:
     from app.api import resources
     from app.services import documents

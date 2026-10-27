@@ -30,6 +30,54 @@ PROFILE_FIELDS = (
     "profile_picture",
 )
 
+# Firestore caps a document at 1 MiB. These bounds keep a single profile far
+# below that and stop a client from writing arbitrary nested values into
+# fields the projections assume are short strings.
+PROFILE_FIELD_LIMITS = {
+    "full_name": 120,
+    "phone_number": 32,
+    "designation": 120,
+    "organization": 160,
+    "bio": 2_000,
+    "profile_picture": 500,
+}
+
+
+def _profile_patch(payload: dict) -> dict:
+    patch: dict[str, str] = {}
+    for key in PROFILE_FIELDS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if value is None:
+            patch[key] = ""
+            continue
+        if not isinstance(value, str):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"{key} must be a string.",
+            )
+        text = value.strip()
+        if len(text) > PROFILE_FIELD_LIMITS[key]:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"{key} must be at most {PROFILE_FIELD_LIMITS[key]} characters.",
+            )
+        if key != "bio" and any(ord(char) < 32 or ord(char) == 127 for char in text):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"{key} must not contain control characters.",
+            )
+        if key == "profile_picture" and text and not text.startswith(
+            ("https://", "http://")
+        ):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "profile_picture must be an http(s) URL.",
+            )
+        patch[key] = text
+    return patch
+
 
 def _touch_last_login(user: dict) -> None:
     """Record sign-in activity at most once every five minutes."""
@@ -60,7 +108,7 @@ def sync_profile(
 ):
     """Upsert the profile fields the client owns and return the full session."""
     payload = payload or {}
-    patch = {key: payload[key] for key in PROFILE_FIELDS if key in payload}
+    patch = _profile_patch(payload)
     patch["last_login_at"] = now_iso()
     patch["updated_at"] = now_iso()
     db().collection("users").document(user["uid"]).set(patch, merge=True)
