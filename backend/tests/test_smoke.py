@@ -4,6 +4,7 @@ pure-Python services behave. No Firebase credentials are required.
 import asyncio
 from io import BytesIO
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -310,6 +311,49 @@ def test_request_body_guard_rejects_oversized_uploads(
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
 
 
+def test_cors_wraps_host_rejections(client: TestClient) -> None:
+    """TrustedHost must sit inside CORS so a browser can read its 400."""
+    response = client.post(
+        "/api/auth/sync",
+        content=b"{}",
+        headers={
+            "Host": "evil.example.com",
+            "Origin": "http://localhost:5173",
+            "Content-Type": "application/json",
+        },
+    )
+    assert response.status_code == 400
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_security_headers_land_on_route_and_rejection_responses(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ok = client.get("/")
+    assert ok.headers["x-content-type-options"] == "nosniff"
+    assert ok.headers["x-frame-options"] == "DENY"
+    assert ok.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    assert "geolocation=()" in ok.headers["permissions-policy"]
+
+    # The body guard rejects before routing, so this proves the header layer
+    # wraps middleware-generated responses too, not just route responses.
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "max_upload_size_bytes", 1024)
+
+    def chunks():
+        for _ in range(3):
+            yield b"x" * MULTIPART_OVERHEAD_BYTES
+
+    rejected = client.post(
+        "/api/auth/sync",
+        content=chunks(),
+        headers={"Content-Type": "application/json"},
+    )
+    assert rejected.status_code == 413
+    assert rejected.headers["x-content-type-options"] == "nosniff"
+
+
 def test_request_body_guard_counts_chunked_bodies(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -456,3 +500,81 @@ def test_download_filenames_cannot_break_headers() -> None:
     cleaned = resources._clean_filename('report"\r\nX-Injected: 1.csv')
     assert cleaned == "report'  X-Injected: 1.csv"
     assert resources._clean_filename("../../etc/passwd") == "passwd"
+    # Backslashes are separators on Windows even though PurePath on Linux
+    # treats them as ordinary characters.
+    assert "\\" not in resources._clean_filename(r"..\..\windows\system32\x.txt")
+
+
+def test_download_filename_header_is_ascii_safe_for_any_script() -> None:
+    from app.api import resources
+
+    header = resources._content_disposition("特許 出願.docx")["Content-Disposition"]
+    # Starlette encodes every header as Latin-1; a raw Unicode filename raises.
+    header.encode("latin-1")
+    assert 'filename="' in header
+    assert "filename*=UTF-8''" in header
+    assert "%E7%89%B9%E8%A8%B1" in header
+
+    long_header = resources._content_disposition("a" * 400 + ".pdf")[
+        "Content-Disposition"
+    ]
+    assert len(long_header) < 500
+    assert ".pdf" in long_header
+
+
+def test_report_cells_cannot_start_a_spreadsheet_formula() -> None:
+    from app.api import resources
+
+    assert resources._csv_safe('=HYPERLINK("http://evil", "click")').startswith("'=")
+    assert resources._csv_safe("+1+1").startswith("'+")
+    assert resources._csv_safe("@SUM(A1)").startswith("'@")
+    assert resources._csv_safe("ordinary title") == "ordinary title"
+    assert resources._csv_safe(None) == ""
+
+
+def test_bootstrap_admin_requires_a_verified_email(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core import security
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "bootstrap_admin_email", "owner@example.com")
+    unverified = security._new_profile(
+        "u1", {"email": "owner@example.com", "email_verified": False}
+    )
+    assert unverified["account_status"] == "pending"
+    assert unverified["role_codes"] == ["INNOVATOR"]
+
+    verified = security._new_profile(
+        "u2", {"email": "owner@example.com", "email_verified": True}
+    )
+    assert verified["account_status"] == "approved"
+    assert verified["role_codes"] == ["SUPER_ADMIN"]
+
+
+def test_gemini_key_is_a_header_and_never_echoed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import settings
+    from app.services import drafting
+
+    secret = "super-secret-key"
+    monkeypatch.setattr(settings, "gemini_api_key", secret)
+    seen: dict = {}
+
+    def fake_post(url: str, **kwargs):
+        seen.update(kwargs)
+        request = httpx.Request("POST", f"{url}?key={secret}")
+        raise httpx.HTTPStatusError(
+            f"Client error '400 Bad Request' for url '{request.url}'",
+            request=request,
+            response=httpx.Response(400, request=request),
+        )
+
+    monkeypatch.setattr(drafting.httpx, "post", fake_post)
+    with pytest.raises(drafting.AIGenerationError) as exc:
+        drafting._gemini_text({"invention_title": "Test"}, {}, "ABSTRACT")
+
+    assert secret not in str(exc.value)
+    assert "key" not in seen
+    assert seen["headers"]["x-goog-api-key"] == secret
