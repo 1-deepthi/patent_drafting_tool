@@ -317,7 +317,7 @@ Copy from `backend/.env.example`. Never commit `.env` or `secrets/`.
 | `ALLOWED_HOSTS` | Yes | `localhost,127.0.0.1` | Trusted hosts (real domain in prod) |
 | `DEPLOYMENT_TARGET` | No | `self_hosted` | `self_hosted` \| `vercel` (clamps uploads below Vercel's 4.5 MB cap) |
 | `MAX_UPLOAD_SIZE_BYTES` | No | `0` (profile default) | Per-file cap; `0` = 10 MiB self-hosted / 4 MiB Vercel; explicit values are clamped on Vercel |
-| `PDF_CONVERSION_ENABLED` | No | `true` | `false` = DOCX-only deployment (no LibreOffice) |
+| `PDF_CONVERSION_ENABLED` | No | _(unset)_ | `true`/`false`; unset = on except on Vercel, and the API still reports PDF off when LibreOffice is missing |
 | `BLOCKED_UPLOAD_EXTENSIONS` | No | `.exe,.bat,.cmd,.sh,.msi,.com,.dll,.scr,.jar` | Blocked upload types |
 | `AI_PROVIDER` | No | `stub` | `stub` (placeholder) \| `gemini` (real drafting) |
 | `GEMINI_API_KEY` | If `AI_PROVIDER=gemini` | _(empty)_ | Google AI API key |

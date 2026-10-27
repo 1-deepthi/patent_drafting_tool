@@ -22,7 +22,8 @@ Conventions:
 The frontend reads `/api/config/capabilities` once per page load, rejects
 oversized files before uploading, and hides PDF generation when the deployment
 has no LibreOffice. Uploads over the cap return `413`; PDF requests return
-`400` when `PDF_CONVERSION_ENABLED=false`.
+`400` when PDF generation is disabled (the default on Vercel, or when
+LibreOffice is missing).
 
 ## Auth (`/api/auth`)
 

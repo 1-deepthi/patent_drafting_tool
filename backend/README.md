@@ -95,7 +95,7 @@ file sizes before uploading, and hides PDF generation when it is unavailable.
 |---|---|---|
 | `DEPLOYMENT_TARGET` | `self_hosted` | `vercel` clamps uploads to 4 MiB and whole requests to 4.5 MB |
 | `MAX_UPLOAD_SIZE_BYTES` | `0` | `0` = profile default (10 MiB self-hosted, 4 MiB Vercel); explicit values are still clamped on Vercel |
-| `PDF_CONVERSION_ENABLED` | `true` | `false` rejects PDF jobs with a `400`; generate DOCX instead |
+| `PDF_CONVERSION_ENABLED` | unset | `true`/`false`; unset = on except on Vercel, and the API reports PDF off if LibreOffice is missing |
 
 Requests over the body limit are rejected with `413` before routing, and
 multipart uploads are also counted while streaming, so a missing

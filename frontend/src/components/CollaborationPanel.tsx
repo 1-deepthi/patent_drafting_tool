@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { apiDownload, apiFetch, apiUpload } from "../lib/api";
+import { formatFileSize } from "../lib/format";
 import { LoadingState } from "./LoadingState";
 import { EmptyState } from "./EmptyState";
 import {
@@ -12,13 +13,6 @@ import {
 } from "../lib/types";
 
 type SubTab = "comments" | "files" | "calendar";
-
-function formatBytes(bytes: number | null): string {
-  if (bytes === null) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
@@ -245,7 +239,7 @@ function FilesSection({ patentId }: { patentId: string }) {
             <div>
               <p className="text-sm font-medium text-slate-800">{f.original_file_name}</p>
               <p className="text-xs text-slate-400">
-                {formatBytes(f.file_size_bytes)} · {f.uploaded_by_name ?? "Unknown"} ·{" "}
+                {formatFileSize(f.file_size_bytes)} · {f.uploaded_by_name ?? "Unknown"} ·{" "}
                 {formatDateTime(f.created_at)}
               </p>
             </div>

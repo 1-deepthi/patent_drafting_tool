@@ -1,3 +1,5 @@
+import { formatFileSize } from "./format";
+
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 /** Returns a fresh Firebase ID token for the signed-in user, or null. */
@@ -29,7 +31,7 @@ export class ApiError extends Error {
 
 /** Public limits reported by `GET /api/config/capabilities`. */
 export interface RuntimeCapabilities {
-  deployment_target: string;
+  deployment_target: "self_hosted" | "vercel";
   max_upload_size_bytes: number;
   max_request_body_bytes: number;
   pdf_generation_enabled: boolean;
@@ -44,7 +46,9 @@ let capabilitiesRequest: Promise<RuntimeCapabilities> | null = null;
  */
 export function getRuntimeCapabilities(): Promise<RuntimeCapabilities> {
   if (!capabilitiesRequest) {
-    capabilitiesRequest = fetch(`${API_URL}/api/config/capabilities`)
+    capabilitiesRequest = fetch(`${API_URL}/api/config/capabilities`, {
+      cache: "no-store",
+    })
       .then(async (response) => {
         if (!response.ok) {
           throw new ApiError(
@@ -60,12 +64,6 @@ export function getRuntimeCapabilities(): Promise<RuntimeCapabilities> {
       });
   }
   return capabilitiesRequest;
-}
-
-export function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 interface ApiFetchOptions extends RequestInit {

@@ -58,7 +58,7 @@ production (`pydantic-settings`; see `backend/app/core/config.py`). Set:
 | `ALLOWED_HOSTS` | The exact backend host, e.g. `api.example.com` |
 | `DEPLOYMENT_TARGET` | `self_hosted`, or `vercel` (see the Vercel notes) |
 | `MAX_UPLOAD_SIZE_BYTES` | `0` for the profile default (10 MiB self-hosted, 4 MiB Vercel); lower it to restrict uploads further |
-| `PDF_CONVERSION_ENABLED` | `true` when the image has LibreOffice; `false` for a DOCX-only runtime |
+| `PDF_CONVERSION_ENABLED` | Unset = on except on Vercel; set `true`/`false` to override |
 | `BLOCKED_UPLOAD_EXTENSIONS` | Keep the default deny-list |
 | `AI_PROVIDER` | `stub` unless you intend to pay for Gemini |
 | `GEMINI_API_KEY` | Only when `AI_PROVIDER=gemini`; store as a secret |
@@ -228,8 +228,10 @@ Running the backend as a Vercel Python function:
 1. Set `DEPLOYMENT_TARGET=vercel`, so the effective upload cap is 4 MiB and
    the whole-request cap is 4.5 MB. Explicit `MAX_UPLOAD_SIZE_BYTES` values
    above that are clamped, never honoured.
-2. Set `PDF_CONVERSION_ENABLED=false`. PDF jobs return `400`; the UI reads
-   `GET /api/config/capabilities` and hides the PDF button.
+2. PDF conversion is off by default on Vercel, and `/api/config/capabilities`
+   reports PDF off whenever LibreOffice is missing. PDF jobs return `400`; the
+   UI reads the capabilities and hides the PDF button. Set
+   `PDF_CONVERSION_ENABLED=true` only if the runtime actually has LibreOffice.
 3. Inject `FIREBASE_SERVICE_ACCOUNT_JSON` from Vercel's secret store. The
    function filesystem is read-only except `/tmp`, so the path-based
    credential file from §2 is not available.
