@@ -691,6 +691,15 @@ def test_profile_fields_are_bounded_and_typed() -> None:
     assert auth._profile_patch({"account_status": "approved"}) == {}
 
 
+def test_api_csp_is_strict_but_docs_stays_usable(client: TestClient) -> None:
+    api = client.get("/api/config/capabilities")
+    assert "default-src 'none'" in api.headers["content-security-policy"]
+
+    docs = client.get("/docs")
+    assert docs.status_code == 200
+    assert "content-security-policy" not in docs.headers
+
+
 def test_unexpected_generation_errors_are_not_echoed() -> None:
     from app.api import resources
     from app.services import documents
