@@ -10,6 +10,18 @@ secrets/
 *.pem
 *.key
 firebase-service-account*.json
+*-firebase-adminsdk-*.json
+serviceAccountKey.json
+
+# --- Firebase CLI (local caches and debug logs) ---
+.firebase/
+firebase-debug.log*
+firestore-debug.log*
+storage-debug.log*
+database-debug.log*
+pubsub-debug.log*
+ui-debug.log*
+emulator-debug.log*
 
 # --- Python ---
 venv/
@@ -37,6 +49,10 @@ yarn-error.log*
 
 # --- Local reference clones (never commit; see CONTRIBUTING.md) ---
 ref-repos/
+
+# --- Local tooling output ---
+.trace/
+backend/.trace/
 
 # --- OS / editors ---
 .DS_Store

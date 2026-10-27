@@ -1,13 +1,20 @@
 import { useEffect, useState } from "react";
-import { apiDownload, apiFetch, ApiError } from "../lib/api";
+import {
+  apiDownload,
+  apiFetch,
+  ApiError,
+  getRuntimeCapabilities,
+  type RuntimeCapabilities,
+} from "../lib/api";
 import type {
   DocumentGenerationJobOut,
   DocumentOut,
   DocumentVersionOut,
 } from "../lib/types";
+import { LoadingState } from "./LoadingState";
 
 interface Props {
-  patentId: number;
+  patentId: string;
   /** Mirrors the backend gate in can_generate_documents: status must be
    * "Under Review" or "Draft Generated", checked by the caller. */
   statusAllowsGeneration: boolean;
@@ -23,11 +30,13 @@ export function DocumentGenerationPanel({
 }: Props) {
   const [documents, setDocuments] = useState<DocumentOut[] | null>(null);
   const [jobs, setJobs] = useState<DocumentGenerationJobOut[] | null>(null);
-  const [versions, setVersions] = useState<Record<number, DocumentVersionOut[]>>({});
-  const [expandedDocId, setExpandedDocId] = useState<number | null>(null);
+  const [versions, setVersions] = useState<Record<string, DocumentVersionOut[]>>({});
+  const [expandedDocId, setExpandedDocId] = useState<string | null>(null);
   const [generating, setGenerating] = useState<"PDF" | "DOCX" | null>(null);
-  const [retrying, setRetrying] = useState<number | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [capabilities, setCapabilities] = useState<RuntimeCapabilities | null>(null);
+  const [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false);
 
   async function loadDocuments() {
     try {
@@ -51,6 +60,25 @@ export function DocumentGenerationPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patentId]);
 
+  useEffect(() => {
+    let cancelled = false;
+    getRuntimeCapabilities()
+      .then((caps) => {
+        if (!cancelled) setCapabilities(caps);
+      })
+      .catch(() => {
+        // Capabilities are an enhancement; keep the full UI if the endpoint
+        // is unreachable and let the backend reject what it cannot do.
+      })
+      .finally(() => {
+        if (!cancelled) setCapabilitiesLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const pdfEnabled = capabilities?.pdf_generation_enabled !== false;
   const canGenerate = statusAllowsGeneration && allSectionsCompleted;
 
   async function generate(format: "PDF" | "DOCX") {
@@ -72,7 +100,7 @@ export function DocumentGenerationPanel({
     }
   }
 
-  async function retry(jobId: number) {
+  async function retry(jobId: string) {
     setRetrying(jobId);
     setError(null);
     try {
@@ -91,7 +119,7 @@ export function DocumentGenerationPanel({
     }
   }
 
-  async function toggleVersions(documentId: number) {
+  async function toggleVersions(documentId: string) {
     if (expandedDocId === documentId) {
       setExpandedDocId(null);
       return;
@@ -109,7 +137,7 @@ export function DocumentGenerationPanel({
     }
   }
 
-  async function download(documentId: number, format: string) {
+  async function download(documentId: string, format: string) {
     try {
       await apiDownload(
         `/api/patents/${patentId}/documents/${documentId}/download`,
@@ -120,11 +148,15 @@ export function DocumentGenerationPanel({
     }
   }
 
-  async function downloadVersion(versionId: number, versionNumber: number) {
+  async function downloadVersion(
+    versionId: string,
+    versionNumber: number,
+    format: string,
+  ) {
     try {
       await apiDownload(
         `/api/patents/${patentId}/documents/versions/${versionId}/download`,
-        `document-v${versionNumber}.pdf`
+        `document-v${versionNumber}.${format === "DOCX" ? "docx" : "pdf"}`
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Download failed");
@@ -136,9 +168,16 @@ export function DocumentGenerationPanel({
       <h3 className="mb-3 text-sm font-semibold text-slate-700">Documents</h3>
 
       {error && (
-        <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <div
+          role="alert"
+          className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+        >
           {error}
         </div>
+      )}
+
+      {(documents === null || jobs === null) && (
+        <LoadingState compact label="Loading documents…" />
       )}
 
       {!statusAllowsGeneration && (
@@ -150,6 +189,11 @@ export function DocumentGenerationPanel({
       {statusAllowsGeneration && !allSectionsCompleted && (
         <p className="mb-4 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
           Complete AI drafting for every section above before generating documents.
+        </p>
+      )}
+      {capabilities && !capabilities.pdf_generation_enabled && (
+        <p className="mb-4 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
+          PDF generation is not available on this deployment. Generate a DOCX instead.
         </p>
       )}
 
@@ -165,13 +209,20 @@ export function DocumentGenerationPanel({
         </div>
         {canGenerate && (
           <div className="flex gap-2">
-            <button
-              onClick={() => generate("PDF")}
-              disabled={generating !== null}
-              className="whitespace-nowrap rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-50"
-            >
-              {generating === "PDF" ? "Generating…" : "Generate PDF"}
-            </button>
+            {pdfEnabled && (
+              <button
+                onClick={() => generate("PDF")}
+                disabled={generating !== null || !capabilitiesLoaded}
+                title={
+                  capabilitiesLoaded
+                    ? undefined
+                    : "Checking whether PDF conversion is available…"
+                }
+                className="whitespace-nowrap rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+              >
+                {generating === "PDF" ? "Generating…" : "Generate PDF"}
+              </button>
+            )}
             <button
               onClick={() => generate("DOCX")}
               disabled={generating !== null}
@@ -230,7 +281,9 @@ export function DocumentGenerationPanel({
                         )}
                       </span>
                       <button
-                        onClick={() => downloadVersion(v.id, v.version_number)}
+                        onClick={() =>
+                          downloadVersion(v.id, v.version_number, doc.output_format)
+                        }
                         className="text-blue-600 hover:underline"
                       >
                         Download
@@ -264,15 +317,18 @@ export function DocumentGenerationPanel({
                   {job.status}
                   {job.completed_at && ` · ${new Date(job.completed_at).toLocaleString()}`}
                 </span>
-                {job.status === "Failed" && (
-                  <button
-                    onClick={() => retry(job.id)}
-                    disabled={retrying !== null}
-                    className="rounded border border-slate-300 px-2 py-0.5 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                  >
-                    {retrying === job.id ? "Retrying…" : "Retry"}
-                  </button>
-                )}
+                {job.status === "Failed" &&
+                  (job.output_format === "PDF" && !pdfEnabled ? (
+                    <span className="text-slate-400">PDF unavailable</span>
+                  ) : (
+                    <button
+                      onClick={() => retry(job.id)}
+                      disabled={retrying !== null}
+                      className="rounded border border-slate-300 px-2 py-0.5 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {retrying === job.id ? "Retrying…" : "Retry"}
+                    </button>
+                  ))}
               </div>
             ))}
           </div>

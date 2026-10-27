@@ -1,10 +1,24 @@
+import { formatFileSize } from "./format";
+
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
-let currentToken: string | null = null;
+/** Returns a fresh Firebase ID token for the signed-in user, or null. */
+type TokenProvider = () => Promise<string | null>;
 
-/** Called by AuthContext whenever the token changes (login/refresh/logout). */
-export function setAuthToken(token: string | null) {
-  currentToken = token;
+let tokenProvider: TokenProvider = async () => null;
+
+/**
+ * Called once by AuthContext. Firebase ID tokens expire after an hour, so the
+ * provider is asked for a token on every request instead of a cached string
+ * being pushed in here.
+ */
+export function setTokenProvider(provider: TokenProvider) {
+  tokenProvider = provider;
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const token = await tokenProvider();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 export class ApiError extends Error {
@@ -13,6 +27,43 @@ export class ApiError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+/** Public limits reported by `GET /api/config/capabilities`. */
+export interface RuntimeCapabilities {
+  deployment_target: "self_hosted" | "vercel";
+  max_upload_size_bytes: number;
+  max_request_body_bytes: number;
+  pdf_generation_enabled: boolean;
+}
+
+let capabilitiesRequest: Promise<RuntimeCapabilities> | null = null;
+
+/**
+ * Deployment limits are fixed for the life of a backend instance, so one
+ * request per page load is enough. A failed lookup is retried on the next call
+ * rather than poisoning the cache.
+ */
+export function getRuntimeCapabilities(): Promise<RuntimeCapabilities> {
+  if (!capabilitiesRequest) {
+    capabilitiesRequest = fetch(`${API_URL}/api/config/capabilities`, {
+      cache: "no-store",
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new ApiError(
+            response.status,
+            `Could not load deployment capabilities (${response.status})`,
+          );
+        }
+        return (await response.json()) as RuntimeCapabilities;
+      })
+      .catch((error: unknown) => {
+        capabilitiesRequest = null;
+        throw error;
+      });
+  }
+  return capabilitiesRequest;
 }
 
 interface ApiFetchOptions extends RequestInit {
@@ -25,11 +76,8 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
   const finalHeaders: Record<string, string> = {
     "Content-Type": "application/json",
     ...(headers as Record<string, string> | undefined),
+    ...(auth ? await authHeaders() : {}),
   };
-
-  if (auth && currentToken) {
-    finalHeaders["Authorization"] = `Bearer ${currentToken}`;
-  }
 
   const response = await fetch(`${API_URL}${path}`, {
     ...rest,
@@ -51,10 +99,6 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
   return (await response.json()) as T;
 }
 
-export function googleLoginUrl(): string {
-  return `${API_URL}/api/auth/google/login`;
-}
-
 /** For multipart uploads — apiFetch always sends Content-Type: application/json,
  * which breaks a multipart body, so this builds its own fetch with just the
  * Authorization header and lets the browser set the multipart boundary. */
@@ -64,11 +108,19 @@ export async function apiUpload<T>(
   fieldName = "upload",
   query?: Record<string, string | number | boolean>,
 ): Promise<T> {
+  const capabilities = await getRuntimeCapabilities().catch(() => null);
+  if (capabilities && file.size > capabilities.max_upload_size_bytes) {
+    throw new ApiError(
+      413,
+      `"${file.name}" is ${formatFileSize(file.size)}; this deployment accepts files up to ` +
+        `${formatFileSize(capabilities.max_upload_size_bytes)}.`,
+    );
+  }
+
   const formData = new FormData();
   formData.append(fieldName, file);
 
-  const finalHeaders: Record<string, string> = {};
-  if (currentToken) finalHeaders["Authorization"] = `Bearer ${currentToken}`;
+  const finalHeaders: Record<string, string> = { ...(await authHeaders()) };
 
   const qs = query
     ? "?" + new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)])).toString()
@@ -94,12 +146,33 @@ export async function apiUpload<T>(
   return (await response.json()) as T;
 }
 
+/** Read the filename from Content-Disposition.
+ *
+ * The backend sends an ASCII `filename` plus an RFC 5987 `filename*` for
+ * non-Latin-1 names; prefer the encoded form so a Japanese or emoji filename
+ * survives. `response.headers.get` only exposes this header because the API
+ * lists it in `Access-Control-Expose-Headers`.
+ */
+function filenameFromDisposition(disposition: string, fallback: string): string {
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded[1].trim());
+    } catch {
+      // malformed escape — fall through to the ASCII parameter
+    }
+  }
+  const quoted = disposition.match(/filename="([^"]*)"/i);
+  if (quoted) return quoted[1];
+  const bare = disposition.match(/filename=([^;]+)/i);
+  return bare ? bare[1].trim().replace(/^"|"$/g, "") : fallback;
+}
+
 /** For binary downloads (PDF/DOCX) — apiFetch always parses JSON, so this
  * fetches the blob directly, reads the filename from Content-Disposition,
  * and triggers a normal browser download via a throwaway <a> tag. */
 export async function apiDownload(path: string, fallbackFilename: string): Promise<void> {
-  const finalHeaders: Record<string, string> = {};
-  if (currentToken) finalHeaders["Authorization"] = `Bearer ${currentToken}`;
+  const finalHeaders: Record<string, string> = { ...(await authHeaders()) };
 
   const response = await fetch(`${API_URL}${path}`, { headers: finalHeaders });
   if (!response.ok) {
@@ -114,8 +187,7 @@ export async function apiDownload(path: string, fallbackFilename: string): Promi
   }
 
   const disposition = response.headers.get("Content-Disposition") || "";
-  const match = disposition.match(/filename="?([^"]+)"?/);
-  const filename = match ? match[1] : fallbackFilename;
+  const filename = filenameFromDisposition(disposition, fallbackFilename);
 
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);

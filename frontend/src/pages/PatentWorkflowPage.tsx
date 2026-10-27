@@ -11,8 +11,8 @@ import { type PatentOut } from "../lib/types";
 type Tab = "basic-info" | "questionnaire" | "collaboration";
 
 export default function PatentWorkflowPage() {
-  const { id } = useParams();
-  const patentId = Number(id);
+  const { id } = useParams<{ id: string }>();
+  const patentId = id ?? "";
 
   const [patent, setPatent] = useState<PatentOut | null>(null);
   const [tab, setTab] = useState<Tab>("basic-info");

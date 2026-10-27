@@ -5,8 +5,8 @@
 //
 // The uploaded .docx is the source of truth for layout/letterhead — this
 // UI only manages which file is active per document_type; the actual
-// Jinja-in-DOCX merge happens server-side in document_service.py via
-// docxtpl. Placeholders the template author can use:
+// Jinja-in-DOCX merge happens server-side in backend/app/services/documents.py
+// via docxtpl. Placeholders the template author can use:
 // {{ TITLE }} {{ WATERMARK_TEXT }} {{ ABSTRACT }} {{ BACKGROUND }}
 // {{ SUMMARY }} {{ DESCRIPTION }} {{ CLAIMS }}
 
@@ -21,7 +21,7 @@ export function TemplatesPanel() {
   const [templates, setTemplates] = useState<TemplateOut[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [busyId, setBusyId] = useState<number | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
   const [uploadWarning, setUploadWarning] = useState<TemplateOut | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -89,7 +89,7 @@ export function TemplatesPanel() {
     }
   }
 
-  async function activate(id: number) {
+  async function activate(id: string) {
     setBusyId(id);
     setError(null);
     try {
@@ -102,7 +102,7 @@ export function TemplatesPanel() {
     }
   }
 
-  async function remove(id: number) {
+  async function remove(id: string) {
     setBusyId(id);
     setError(null);
     try {

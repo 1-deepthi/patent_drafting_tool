@@ -66,7 +66,7 @@ export function BasicInfoTab({
   patentId,
   editable,
 }: {
-  patentId: number;
+  patentId: string;
   editable: boolean;
 }) {
   return (
@@ -81,14 +81,14 @@ function ApplicantsPanel({
   patentId,
   editable,
 }: {
-  patentId: number;
+  patentId: string;
   editable: boolean;
 }) {
   const [applicants, setApplicants] = useState<ApplicantOut[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<ApplicantInput>(EMPTY_APPLICANT);
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -154,7 +154,7 @@ function ApplicantsPanel({
     }
   }
 
-  async function remove(id: number) {
+  async function remove(id: string) {
     setBusy(true);
     setError(null);
     try {
@@ -376,14 +376,14 @@ function InventorsPanel({
   patentId,
   editable,
 }: {
-  patentId: number;
+  patentId: string;
   editable: boolean;
 }) {
   const [inventors, setInventors] = useState<InventorOut[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<InventorInput>(EMPTY_INVENTOR);
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -445,7 +445,7 @@ function InventorsPanel({
     }
   }
 
-  async function remove(id: number) {
+  async function remove(id: string) {
     setBusy(true);
     setError(null);
     try {
@@ -633,7 +633,7 @@ export function QuestionnaireTab({
   patentId,
   editable,
 }: {
-  patentId: number;
+  patentId: string;
   editable: boolean;
 }) {
   const [q, setQ] = useState<QuestionnaireOut | null>(null);

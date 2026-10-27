@@ -3,133 +3,150 @@
 ## 1. System overview
 
 ```text
-                    +------------------+
-                    |   React + Vite   |
-                    |   frontend/:5173 |
-                    |  (nginx in prod) |
-                    +--------+---------+
-                             |  HTTPS / JSON + multipart
-                             |  Authorization: Bearer <Firebase ID token>
-                             v
-                    +--------+---------+
-                    |  FastAPI backend |
-                    |  backend/:8000   |
-                    |  app/main.py     |
-                    +--------+---------+
-                             |
-            +----------------+----------------+
-            |                |                |
-   Firebase Auth      Cloud Firestore    Cloud Storage
-   (verify ID token)  (all app data)     (files, templates,
-                                          generated docs)
+                    +-------------------------+
+                    |      React + Vite       |
+                    |  frontend/ :5173 / :80  |
+                    +-----------+-------------+
+                       |                 |
+        Firebase JS SDK|                 | HTTPS / JSON + multipart
+        (Google sign-in)                 | Authorization: Bearer <ID token>
+                       v                 v
+             +------------------+  +--------------------+
+             |  Firebase Auth   |  |  FastAPI backend   |
+             |  (identity)      |  |  backend/ :8000    |
+             +------------------+  |  app/main.py       |
+                       ^           +---------+----------+
+                       | verify ID token      |
+                       |            +---------+----------+
+                       +------------| Firebase Admin SDK|
+                                    +----+---------+----+
+                                         |         |
+                                 Cloud Firestore  Cloud Storage
+                                 (all app data)   (files, templates,
+                                                   generated documents)
 ```
 
-- **Frontend** (`frontend/`): React 18 SPA, React Router role-guarded routes, React Query data fetching, Hook Form + Zod validation. Build-time `VITE_API_URL`; no runtime env.
-- **Backend** (`backend/app/main.py`): FastAPI with `lifespan` that attempts `initialize_firebase()` but never blocks boot; `/health` probes Firestore. Mounts exactly two routers: `auth` (`/api/auth`) and `resources` (`/api`). CORS + TrustedHost middleware; generic 500 handler (verbose only outside production).
-- **Firebase**: Authentication is the identity provider; Firestore is the system of record; Storage holds blobs. The Admin SDK runs privileged — Firestore Security Rules do **not** replace backend checks.
+- **Frontend** (`frontend/`): React 18 SPA, React Router role-guarded routes, React Query, Hook Form + Zod. Firebase JS SDK performs Google sign-in; `VITE_*` values are baked at build time, so there is no runtime env.
+- **Backend** (`backend/app/main.py`): FastAPI with a `lifespan` that attempts `initialize_firebase()` but never blocks boot. `/health` probes Firestore. Mounts exactly two routers: `auth` (`/api/auth`) and `resources` (`/api`). CORS + TrustedHost middleware; a generic 500 handler that stays terse in production.
+- **Firebase**: Authentication is the identity provider; Firestore is the system of record; Storage holds blobs. The browser uses Firebase Auth only — all data access goes through the API, whose Admin SDK runs privileged. The checked-in `firestore.rules` and `storage.rules` therefore deny every direct client read and write; Security Rules do **not** replace backend authorization. The Realtime Database is not used.
 
 ## 2. Request lifecycle
 
-1. Client signs in via Firebase Auth (Google / Email) and holds an **ID token**.
-2. `src/lib/api.ts` (`apiFetch`) attaches `Authorization: Bearer <token>` to every authenticated call.
-3. `app/core/security.py:current_user` verifies the token (`verify_id_token(check_revoked=True)`), loads or auto-creates `users/{uid}`, and enforces the bootstrap-admin upgrade.
-4. `active_user` rejects non-`approved` accounts (`403 awaiting approval`).
-5. `require_roles(*roles)` / `is_admin()` enforce RBAC per endpoint.
-6. `app/services/repository.py` helpers (`get_doc`, `list_docs`, `create_doc`, `patch_doc`, `delete_doc`) scope reads/writes to visible docs (admin bypass, else creator/owner/member/assignee match).
+1. The browser signs in through Firebase Auth (Google popup, redirect fallback) and holds a Firebase **ID token**.
+2. `src/lib/api.ts` registers an async token provider (`setTokenProvider`), so every request asks Firebase for a current token before calling the API. There is no cached token to expire in the client.
+3. `app/core/security.py:current_user` verifies the token (`verify_id_token`), loads `users/{uid}`, and creates the profile on first sight (bootstrap email → `SUPER_ADMIN` + approved; everyone else → `INNOVATOR` + pending).
+4. `active_user` rejects non-approved or disabled accounts (`403`).
+5. Endpoints then use `ensure_permission(user, "<CODE>")` and/or `require_roles(...)` / `is_admin()` / `is_super_admin()`.
+6. `app/services/projections.py` decides visibility (`patent_visible`, `visible_patents`, `require_patent`) and serialises documents into the REST shapes the client expects.
 
-## 3. Roles and auth model
+## 3. Roles, permissions, and auth model
 
 | Role code | Granted by | Meaning |
 |---|---|---|
 | `INNOVATOR` | Default for new users | Own teams + patents |
-| `PATENT_AGENT` | `ADMIN`/`SUPER_ADMIN` via `/api/rbac/users/{id}/roles` | Can be assigned patents |
+| `PATENT_AGENT` | `SUPER_ADMIN` via `/api/rbac/users/{id}/roles` | Can be assigned patents |
 | `ADMIN` | `SUPER_ADMIN` | Approve users, assign agents, manage templates |
 | `SUPER_ADMIN` | Bootstrap email, then `SUPER_ADMIN` only | Full control incl. role assignment |
 
-- Roles are stored as a `role_codes: string[]` array on the user document (not custom claims).
-- `account_status`: `pending` → `approved` (or `rejected`). Only `approved` passes `active_user`.
-- Frontend mirrors this in `AuthContext` (`loading | unauthenticated | pending | approved`) with a sliding 30-minute refresh (`POST /api/auth/refresh` on the legacy path; Firebase tokens refresh client-side in the active path).
-- Route guards: `ProtectedRoute(requireRole=[...], requirePermission=...)` → redirects to `/login`, `/pending-approval`, or `/not-authorized`.
+- Roles are stored as `role_codes: string[]` on the user document (ADR-002). The API projects them as `roles`.
+- Internal state is lowercase (`account_status`: `pending` → `approved` / `rejected`); the API projects Title-Case values (`Pending`, `Approved`, …) for the existing UI.
+- The permission catalog is code-defined in `app/services/rbac.py`: 4 roles × 27 permissions, with sensible defaults per role. Super Admin always holds every permission. Super Admin toggles are stored in `rbac_overrides`; report-download grants live in `report_permission_overrides`. No seed script is required — an empty Firebase project falls back to the code-defined matrix.
+- Admins can toggle the matrix (`/api/rbac/toggle`), but only Super Admin can assign or revoke roles.
+- Sign-in is browser-side only: no server-minted JWT, no refresh endpoint, no dev login. The product's 30-minute inactivity rule is enforced by `AuthContext`, which signs the Firebase session out after idling.
+- Route guards: `ProtectedRoute(requireRole=[...], requirePermission=...)` redirects to `/login`, `/pending-approval`, or `/not-authorized`.
 
 ## 4. Firestore collections
 
-No joins, no migrations — documents linked by string IDs:
+No joins, no migrations — documents are linked by string IDs and filtered in the service layer.
 
 | Collection | Key fields | Linked by |
 |---|---|---|
-| `users` | `role_codes[]`, `account_status`, `approved_by/at` | `uid` (doc ID) |
-| `teams` | `owner_uid`, `member_uids[]`, `created_by` | `created_by` / membership |
-| `patents` | `status`, `workflow_status`, `assigned_agent_uid`, `assignment_status` | `owner_uid` / `created_by` / `assigned_agent_uid` |
-| `applicants`, `inventors` | `patent_id`, `display_order` | `patent_id` |
-| `questionnaires` | doc ID = `patent_id`, `status`, `answers{}` | `patent_id` |
-| `questionnaire_versions` | `patent_id`, snapshot | `patent_id` |
-| `draft_sections` | `patent_id`, `section_type`, `version`, `content` | `patent_id` |
-| `documents` | `patent_id`, `document_type`, `version`, `storage_path` | `patent_id` |
-| `files` | `patent_id`, `storage_path`, `uploaded_by` | `patent_id` |
-| `comments` | `patent_id`, `author_uid` | `patent_id` |
-| `calendar_events` | `patent_id?`, `created_by`/`owner_uid`, `event_type` | user or patent |
-| `notifications` | `recipient_uid`, `read` | recipient |
-| `templates` | `document_type`, `is_active`, `storage_path` | type (one active per type) |
+| `users` | `role_codes[]`, `account_status`, `approved_by/at`, `last_login_at` | `uid` (doc ID) |
+| `teams` | `team_name`, `team_status`, `created_by` | `created_by` + `members` subcollection |
+| `teams/{id}/members` | membership row per user | `user_id` (doc ID) |
+| `patents` | `team_id`, `invention_title`, `application_status`, `assigned_patent_agent_id`, `assignment_history[]`, lifecycle sub-statuses | `created_by`, `team_id`, `assigned_patent_agent_id` |
+| `applicants`, `inventors` | `patent_application_id`, order fields | `patent_application_id` |
+| `questionnaires` | `patent_application_id`, status, answers | `patent_application_id` |
+| `questionnaire_versions` | snapshot + `version_number` | `patent_application_id` |
+| `drafts` | `patent_application_id`, `section_type`, `version_number`, `ai_response` | `patent_application_id` |
+| `documents` | `patent_application_id`, `output_format`, `stored_path` | `patent_application_id` |
+| `document_versions` | `document_id`, `version_number`, `storage_path` | `document_id` |
+| `document_jobs` | `patent_application_id`, `status`, `error_message` | `patent_application_id` |
+| `files` | `patent_application_id`, `stored_path`, `uploaded_by` | `patent_application_id` |
+| `comments` | `patent_application_id`, `user_id`, `comment_text` | `patent_application_id` |
+| `calendar_events` | `patent_application_id`, `event_type`, `event_date` | patent and/or creator |
+| `notifications` | `recipient_uid`, `notification_type`, `is_read` | recipient |
+| `templates` | `document_type`, `is_active`, `stored_path` | one active per type |
+| `activity` | `user_id`, `event_type`, `entity_type/id` | dashboard feed |
+| `rbac_overrides` | `granted` per `role_id:permission_id` | RBAC matrix |
+| `report_permission_overrides` | `granted` per `role_id:report_type` | report matrix |
 
 Probe collection `_health` is used only by `/health`.
 
-## 5. Patent state machine
+## 5. Patent lifecycle
 
-Active Firebase fields: `status` / `workflow_status` (`draft`, `submitted`, `under_review`) plus assignment (`pending`, `accepted`, `rejected`).
+The API accepts and returns the full product vocabulary, using Title-Case statuses:
 
 ```text
-create (draft) → submit (submitted) → assign (assignment pending)
-  → accept (accepted, workflow under_review)
-  → reject (rejected, assigned_agent cleared) → reassign
+Draft → Submitted → Awaiting Patent Agent Acceptance → Under Review
+→ Changes Requested → Ready for Draft Generation → Draft Generated
+→ Ready for Filing → Filed → Examination Requested → FER Received
+→ FER Response Submitted → Hearing Scheduled → Granted / Rejected / Withdrawn / Abandoned
 ```
 
-Guards in `app/api/resources.py`:
+Transitions currently produced by the API:
 
-- `submit`: owner or admin only.
-- `assign` / `reassign` / `auto-assign`: `ADMIN`/`SUPER_ADMIN` only; assignee must be an approved `PATENT_AGENT`; auto-assign picks the lowest `active_assignment_count`.
-- `PATCH /patents/{id}`: blocks edits once `submitted`/`under_review`/`approved` for non-admin/non-agent callers; strips protected fields (`id`, `created_by`, `owner_uid`, `assigned_*`, `workflow_status`, `status`).
-- Questionnaire `submit` flips questionnaire `status` to `submitted` (draft generation gating lives in legacy `draft_service.can_generate`).
+```text
+create (Draft) → submit (Submitted) → assign/auto-assign (Awaiting Patent Agent Acceptance)
+  → accept (Under Review) → generate draft or document (Draft Generated)
+  → reject (back to Submitted, assignment cleared) → reassign
+```
 
-Legacy full lifecycle (`Draft … Granted/Rejected/Withdrawn/Abandoned`, 17 states in `app/models/patent.py`) is **not enforced** in the active path — tracked as migration debt.
+Guards in `app/api/resources.py` and `app/services/projections.py`:
 
-## 6. AI drafting providers
+- `submit`: patent creator or admin, and only while `Draft`.
+- `assign` / `auto-assign` / `reassign`: `ADMIN`/`SUPER_ADMIN`; assignee must be an approved `PATENT_AGENT`; auto-assign picks the lowest active assignment count. Assignment history is appended to the patent document.
+- `accept` / `reject`: the assigned agent (admins may act on their behalf); rejection clears the assignment.
+- Basic info + applicants/inventors are editable only while `Draft` (`can_edit_basic_info`).
+- Draft generation requires `Under Review` and a completed questionnaire; document generation requires `Under Review` or `Draft Generated` and the assigned agent/admin.
+- Statuses beyond `Draft Generated` (filing, examination, grant) are display/import states today; no endpoint moves an application into them yet.
 
-`app/services/ai/` — Strategy pattern:
+## 6. AI drafting
 
-- `base.AIProvider` ABC → `stub_provider` (default placeholder, clearly labeled, plus `warning: not legal advice`) and `gemini_provider` (Google `generativeai`, model `GEMINI_MODEL`, requires `GEMINI_API_KEY`).
-- `factory.get_ai_provider()` returns Gemini only when `AI_PROVIDER=gemini` **and** a key is set; otherwise stub.
-- `POST /api/patents/{id}/draft/generate {section_type}` saves to `draft_sections` with incremented `version`.
+All drafting logic lives in `app/services/drafting.py`:
+
+- `AI_PROVIDER=stub` (default) builds a deterministic placeholder from the questionnaire and appends `DRAFT_WARNING`.
+- `AI_PROVIDER=gemini` plus `GEMINI_API_KEY` calls the Gemini REST API (`GEMINI_MODEL`, default `gemini-2.0-flash`) through `httpx`; the warning is re-appended if the model omits it. Any provider failure becomes a `502`.
+- `POST /api/patents/{id}/draft/generate` accepts `section_types` (default: all five) and stores one `drafts` document per section with an incremented `version_number`, plus `ai_provider`, `ai_model`, and usage fields.
 
 ## 7. Documents and files
 
-- **Documents**: `POST .../documents/generate` builds a DOCX via `python-docx` (Basic Info + Questionnaire answers), uploads to `patents/{pid}/documents/...`, records a `documents` doc (`status: completed, version: 1`). Download via signed v4 URL (300 s). Retry re-generates the same `document_type`. DOCX→PDF conversion shells out to headless LibreOffice (Docker image only).
-- **Files**: `POST .../files` (multipart) validates non-empty, size cap, and blocked extensions, then uploads to `patents/{pid}/files/{uuid}_{name}` + `files` doc. Download via signed URL; delete removes both blob and doc (uploader or admin only).
-- **Templates**: `POST /api/templates` (admin only, multipart `.docx`) → `templates/{type}/{uuid}_{name}` + `templates` doc; `.../activate` deactivates siblings of the same `document_type`.
+- **Documents**: `POST .../documents/generate` runs a generation job synchronously. `app/services/documents.py` renders DOCX with `docxtpl` when an active template exists for the document type, otherwise with the built-in `python-docx` layout. PDF conversion shells out to headless LibreOffice (installed in the Docker image; absent locally → job fails with a clear error). The blob is uploaded to Storage, `documents` / `document_versions` / `document_jobs` rows are written, and the patent moves to `Draft Generated`.
+- **Downloads**: files and documents are streamed through the API with `Content-Disposition: attachment`; there are no signed URLs to expire.
+- **Files**: `POST .../files` (multipart) validates non-empty content, size cap, and blocked extensions, then stores `patents/{pid}/files/{uuid}{ext}` + a `files` doc. Delete removes blob + doc (uploader, `FILES_DELETE`, or admin).
+- **Templates**: `POST /api/templates` (admin, multipart `.docx`) stores `templates/{type}/v{n}.docx`, reports unknown/unused Jinja placeholders in the upload response, and deactivates siblings of the same `document_type` when activated.
 
-## 8. Legacy Postgres path (reference only)
-
-Present but unmounted: `app/models/*` (24 SQLAlchemy tables), `alembic/`, 13 routers (`ai`, `basic_info`, `calendar`, `comments`, `documents`, `files`, `notifications`, `patents`, `questionnaire`, `rbac`, `reports`, `teams`, `templates`), `app/services/*` SQL services, `app/core/{database,oauth,startup_checks,rate_limit,middleware,logging_config}.py`, and `tests/` targeting `/api/auth/dev-login` + Postgres `TRUNCATE`.
-
-Do not build new features on it. Do not deploy it. Removal requires an approved migration-completion issue.
-
-## 9. Frontend architecture
+## 8. Frontend architecture
 
 - Entry `index.html` → `src/main.tsx` (`QueryClientProvider` + `StrictMode`) → `src/App.tsx` (`BrowserRouter` + `AuthProvider` + role routes).
-- `ROLE_HOME` maps first matching role to its dashboard.
-- Data flow: pages → `apiFetch`/`apiUpload`/`apiDownload` → React Query (where used) → `StatusBadge` / `DashboardShell` / panels.
-- 14 pages (4 dashboards + workflow + draft workspace + admin patent list/detail + calendar + reports + auth quartet) and 8 shared components (see README §6 and `API_OVERVIEW.md` for endpoint usage per page).
+- `ROLE_HOME` maps the first matching role to its dashboard; `ProtectedRoute` handles gating and pending accounts.
+- Data flow: pages → `apiFetch`/`apiUpload`/`apiDownload` → React Query (where used) → `StatusBadge` / `DashboardShell` / feature panels.
+- Entity IDs are Firestore strings throughout; only the RBAC catalog keeps numeric role/permission IDs.
+- 14 pages (4 dashboards + workflow + draft workspace + admin patent list/detail + calendar + reports + auth pages) and shared components (`DashboardShell`, `ProtectedRoute`, `LoadingState`, `EmptyState`, `StatusBadge`, panels).
 
-## 10. Cross-cutting concerns
+## 9. Cross-cutting concerns
 
-- **Config**: `app/core/config.py` (`pydantic-settings`, `.env`, `extra='ignore'`) — Firebase + app + upload + AI settings only.
-- **Observability**: global 500 handler, request logging via uvicorn/gunicorn access logs; structured Loguru JSON and `RequestID`/`SecurityHeaders` middleware exist in legacy `core/` but are not wired in active `main.py` (gap).
-- **Scaling**: single-instance assumption — in-memory rate limiting and boot-time migrations race with multiple replicas. See `DEPLOYMENT.md` "A note on scale".
+- **Config**: `app/core/config.py` (`pydantic-settings`, `.env`, `extra='ignore'`) — Firebase, app, upload, and AI settings only.
+- **Observability**: generic 500 handler, request logging via uvicorn/gunicorn access logs, `/health` Firebase probe. There is no structured logging/metrics pipeline yet.
+- **Scaling**: single-instance assumption — document generation runs in-process and spawns LibreOffice. See ADR-003.
+- **Verification**: `backend/tests/` is an offline suite (no Firebase credentials). Live Auth/Firestore/Storage behaviour is covered by the manual checklist in `backend/README.md` §7.
 
-## 11. Decision records
+## 10. Decision records
 
 The reasoning behind the significant choices above is recorded in [`decisions/`](./decisions/):
 
-- [ADR-001](./decisions/ADR-001-firebase-active-runtime.md) — Firebase-native backend as the active runtime
+- [ADR-001](./decisions/ADR-001-firebase-active-runtime.md) — Firebase-native backend as the active runtime (superseded)
 - [ADR-002](./decisions/ADR-002-role-codes-array.md) — Roles as a `role_codes` array on the user document
 - [ADR-003](./decisions/ADR-003-single-instance.md) — Single backend instance
 - [ADR-004](./decisions/ADR-004-stub-first-ai.md) — Stub-first AI drafting with optional Gemini
+- [ADR-005](./decisions/ADR-005-firestore-only-runtime.md) — Firestore-only runtime; legacy SQL stack removed

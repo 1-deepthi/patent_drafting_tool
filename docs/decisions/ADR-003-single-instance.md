@@ -1,29 +1,52 @@
-# ADR-003: Single backend instance (no shared rate limiting or coordinated migrations)
+# ADR-003: Single backend instance
 
 ## Status
-Accepted
+Accepted — amended for the Firestore-only runtime (ADR-005).
 
 ## Date
-2026-10-16
+2026-10-16 (amended 2026-10-27)
 
 ## Context
-Two backend subsystems assume one running instance: rate limiting (`app/core/rate_limit.py`) is in-memory per process, and the container entrypoint (`backend/docker-entrypoint.sh`) runs `alembic upgrade head` on every boot. The production target (Koyeb free/starter tiers, see `DEPLOYMENT.md`) provides a single container by default.
+The backend runs document generation inside the API process: a request
+renders a DOCX and may launch a headless LibreOffice subprocess to convert it
+to PDF. There is no job queue, no distributed lock, and no shared cache; work
+either completes inside the request or is recorded as a failed generation
+job. The deployment target is a single container on a PaaS free/starter tier
+(see `DEPLOYMENT.md`).
+
+The original version of this ADR also cited in-memory rate limiting and
+boot-time Alembic migrations. Both are gone with the SQL stack: Firestore
+needs no migrations, and the Firebase runtime has no in-app rate limiter.
+The single-instance constraint survives for the reasons above.
 
 ## Decision
-Run exactly one backend replica. Multi-instance support is explicitly deferred, not accidentally missing.
+Run exactly one backend replica. Multi-instance support is explicitly
+deferred, not accidentally missing.
 
 ## Alternatives Considered
 
-### Redis-backed rate limiting + one-off release step for migrations
-- Pros: correct under autoscaling; standard practice.
-- Cons: adds a Redis dependency (Compose, config, and hosting) that nothing else needs yet — Redis is deliberately gated on the Phase 6/7 Celery trigger noted in `docker-compose.yml`.
-- Deferred: revisit when traffic or availability requirements demand a second replica.
+### Add a job queue + object-store-backed generation, then scale out
+- Pros: correct under autoscaling; generation stops competing with request
+  handling for CPU and file descriptors.
+- Cons: adds a broker (Redis/Cloud Tasks), a worker image, retry semantics,
+  and a second deployment unit — real work that nothing currently requires.
+- Deferred: revisit when document volume or availability requirements demand
+  a second replica.
 
-### Multi-replica with current code
-- Pros: more capacity.
-- Cons: each replica enforces its own rate limit (N× effective limit) and all replicas race migrations on deploy.
-- Rejected: silently wrong behavior.
+### Multi-replica with the current code
+- Pros: more capacity for ordinary reads.
+- Cons: every replica spawns its own LibreOffice processes against the same
+  CPU budget, and there is no shared coordination for long-running jobs;
+  capacity planning becomes guesswork.
+- Rejected: predictable single-container behaviour is better than silently
+  oversubscribed replicas.
 
 ## Consequences
-- `docker-compose.yml` and deployment docs describe a single backend service; do not scale `replicas` without implementing the Redis + release-step fixes first.
-- CI's Docker smoke test exercises the single-container boot path, which is the supported topology.
+- `docker-compose.yml`, the Dockerfile, and the deployment docs describe one
+  backend service. Do not raise `replicas` or worker count without first
+  moving document generation off the request path.
+- The Docker image runs two Gunicorn/Uvicorn workers (down from four) so the
+  worst case is two concurrent LibreOffice subprocesses per container.
+- There is no in-app rate limiting in the Firebase runtime. Put request
+  limits at the platform edge (PaaS/WAF/Firebase quotas) before exposing the
+  API publicly; add application-level limiting only with a shared store.

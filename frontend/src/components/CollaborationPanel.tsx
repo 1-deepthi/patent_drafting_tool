@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { apiDownload, apiFetch, apiUpload } from "../lib/api";
+import { formatFileSize } from "../lib/format";
 import { LoadingState } from "./LoadingState";
 import { EmptyState } from "./EmptyState";
 import {
@@ -12,13 +13,6 @@ import {
 } from "../lib/types";
 
 type SubTab = "comments" | "files" | "calendar";
-
-function formatBytes(bytes: number | null): string {
-  if (bytes === null) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
@@ -36,7 +30,7 @@ export function CollaborationPanel({
   patentId,
   canManageCalendar,
 }: {
-  patentId: number;
+  patentId: string;
   canManageCalendar: boolean;
 }) {
   const [subTab, setSubTab] = useState<SubTab>("comments");
@@ -79,7 +73,7 @@ export function CollaborationPanel({
 // Comments
 // ---------------------------------------------------------------------------
 
-function CommentsSection({ patentId }: { patentId: number }) {
+function CommentsSection({ patentId }: { patentId: string }) {
   const { user } = useAuth();
   const [comments, setComments] = useState<CommentOut[] | null>(null);
   const [text, setText] = useState("");
@@ -167,7 +161,7 @@ function CommentsSection({ patentId }: { patentId: number }) {
 // Files
 // ---------------------------------------------------------------------------
 
-function FilesSection({ patentId }: { patentId: number }) {
+function FilesSection({ patentId }: { patentId: string }) {
   const { user, hasRole } = useAuth();
   const isAdmin = hasRole("ADMIN") || hasRole("SUPER_ADMIN");
   const [files, setFiles] = useState<FileOut[] | null>(null);
@@ -245,7 +239,7 @@ function FilesSection({ patentId }: { patentId: number }) {
             <div>
               <p className="text-sm font-medium text-slate-800">{f.original_file_name}</p>
               <p className="text-xs text-slate-400">
-                {formatBytes(f.file_size_bytes)} · {f.uploaded_by_name ?? "Unknown"} ·{" "}
+                {formatFileSize(f.file_size_bytes)} · {f.uploaded_by_name ?? "Unknown"} ·{" "}
                 {formatDateTime(f.created_at)}
               </p>
             </div>
@@ -293,7 +287,7 @@ const EMPTY_EVENT: CalendarEventCreate = {
   event_date: "",
 };
 
-function CalendarSection({ patentId, canManage }: { patentId: number; canManage: boolean }) {
+function CalendarSection({ patentId, canManage }: { patentId: string; canManage: boolean }) {
   const [events, setEvents] = useState<CalendarEventOut[] | null>(null);
   const [form, setForm] = useState<CalendarEventCreate>(EMPTY_EVENT);
   const [error, setError] = useState<string | null>(null);
@@ -334,7 +328,7 @@ function CalendarSection({ patentId, canManage }: { patentId: number; canManage:
     }
   }
 
-  async function remove(id: number) {
+  async function remove(id: string) {
     setBusy(true);
     setError(null);
     try {

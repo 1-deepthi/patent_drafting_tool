@@ -10,7 +10,7 @@ Accepted
 Draft generation (`POST /api/patents/{id}/draft/generate`) can call an external LLM, but the project must work fully offline: local development without API keys, CI without network credentials, and tests that never touch the network (`backend/tests/conftest.py` forces `AI_PROVIDER=stub`). Generated text is a draft aid, never filed directly.
 
 ## Decision
-`AI_PROVIDER=stub` is the default. The stub returns a clearly labelled placeholder plus a not-legal-advice warning and still persists a versioned `draft_sections` record, so the whole workflow is exercisable without keys. `AI_PROVIDER=gemini` with `GEMINI_API_KEY` selects the real provider (`GEMINI_MODEL`, default `gemini-2.0-flash`); `factory.get_ai_provider()` falls back to stub unless both are set.
+`AI_PROVIDER=stub` is the default. The stub returns a clearly labelled placeholder plus a not-legal-advice warning and still persists a versioned `drafts` record (one document per section), so the whole workflow is exercisable without keys. `AI_PROVIDER=gemini` with `GEMINI_API_KEY` selects the real provider (`GEMINI_MODEL`, default `gemini-2.0-flash`); the provider branch in `app/services/drafting.py` falls back to stub unless both are set.
 
 ## Alternatives Considered
 
@@ -25,6 +25,6 @@ Draft generation (`POST /api/patents/{id}/draft/generate`) can call an external 
 - Rejected: the workflow, not just the prose, is what needs testing.
 
 ## Consequences
-- Placeholder content must stay obviously non-final; the warning travels with every stub response.
-- Provider selection is a Strategy (`app/services/ai/`); adding a provider means a new module + factory branch, no endpoint changes.
+- Placeholder content must stay obviously non-final; the warning travels with every stub response and is re-appended if a real provider omits it.
+- Provider selection is one branch in `app/services/drafting.py` (`generate_section`); adding a provider means a new `_<provider>_text` helper and a branch, no endpoint changes.
 - Never commit `GEMINI_API_KEY`; rotation procedures in `SECURITY.md` apply.

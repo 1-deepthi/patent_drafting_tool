@@ -19,8 +19,8 @@ import {
 type Tab = "drafting" | "basic-info" | "questionnaire" | "collaboration";
 
 export default function DraftWorkspacePage() {
-  const { id } = useParams();
-  const patentId = Number(id);
+  const { id } = useParams<{ id: string }>();
+  const patentId = id ?? "";
 
   const [patent, setPatent] = useState<PatentOut | null>(null);
   const [slots, setSlots] = useState<DraftSectionSlot[] | null>(null);

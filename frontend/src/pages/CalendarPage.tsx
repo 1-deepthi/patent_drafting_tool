@@ -42,7 +42,7 @@ export default function CalendarPage() {
   }, []);
 
   const homeRole = user?.roles[0];
-  function linkFor(patentId: number): string {
+  function linkFor(patentId: string): string {
     if (homeRole === "PATENT_AGENT") return `/agent/patents/${patentId}/draft`;
     if (homeRole === "INNOVATOR") return `/innovator/patents/${patentId}`;
     return homeRole ? ROLE_HOME[homeRole] : "/";
@@ -63,7 +63,7 @@ export default function CalendarPage() {
   );
 
   function onEventClick(arg: EventClickArg) {
-    const patentId = arg.event.extendedProps.patentId as number;
+    const patentId = arg.event.extendedProps.patentId as string;
     navigate(linkFor(patentId));
   }
 
