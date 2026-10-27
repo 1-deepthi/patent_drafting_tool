@@ -84,6 +84,24 @@ values; role assignment is Super Admin-only on the server.
 The full catalog with permission requirements is in
 [`../docs/API_OVERVIEW.md`](../docs/API_OVERVIEW.md).
 
+### Runtime limits
+
+`GET /api/config/capabilities` is public and returns the deployment profile:
+`deployment_target`, `max_upload_size_bytes`, `max_request_body_bytes`, and
+`pdf_generation_enabled`. The React client reads it once per page load, checks
+file sizes before uploading, and hides PDF generation when it is unavailable.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `DEPLOYMENT_TARGET` | `self_hosted` | `vercel` clamps uploads to 4 MiB and whole requests to 4.5 MB |
+| `MAX_UPLOAD_SIZE_BYTES` | `0` | `0` = profile default (10 MiB self-hosted, 4 MiB Vercel); explicit values are still clamped on Vercel |
+| `PDF_CONVERSION_ENABLED` | `true` | `false` rejects PDF jobs with a `400`; generate DOCX instead |
+
+Requests over the body limit are rejected with `413` before routing, and
+multipart uploads are also counted while streaming, so a missing
+`Content-Length` does not bypass the cap. Downloads stream from Cloud Storage
+instead of buffering the whole object in memory.
+
 Firestore is NoSQL: there are no joins and no migrations. Documents are
 stored in collections and linked by string IDs. The collection map is in
 [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) §4.

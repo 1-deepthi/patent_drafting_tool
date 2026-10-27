@@ -27,6 +27,47 @@ export class ApiError extends Error {
   }
 }
 
+/** Public limits reported by `GET /api/config/capabilities`. */
+export interface RuntimeCapabilities {
+  deployment_target: string;
+  max_upload_size_bytes: number;
+  max_request_body_bytes: number;
+  pdf_generation_enabled: boolean;
+}
+
+let capabilitiesRequest: Promise<RuntimeCapabilities> | null = null;
+
+/**
+ * Deployment limits are fixed for the life of a backend instance, so one
+ * request per page load is enough. A failed lookup is retried on the next call
+ * rather than poisoning the cache.
+ */
+export function getRuntimeCapabilities(): Promise<RuntimeCapabilities> {
+  if (!capabilitiesRequest) {
+    capabilitiesRequest = fetch(`${API_URL}/api/config/capabilities`)
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new ApiError(
+            response.status,
+            `Could not load deployment capabilities (${response.status})`,
+          );
+        }
+        return (await response.json()) as RuntimeCapabilities;
+      })
+      .catch((error: unknown) => {
+        capabilitiesRequest = null;
+        throw error;
+      });
+  }
+  return capabilitiesRequest;
+}
+
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 interface ApiFetchOptions extends RequestInit {
   auth?: boolean; // defaults to true
 }
@@ -69,6 +110,15 @@ export async function apiUpload<T>(
   fieldName = "upload",
   query?: Record<string, string | number | boolean>,
 ): Promise<T> {
+  const capabilities = await getRuntimeCapabilities().catch(() => null);
+  if (capabilities && file.size > capabilities.max_upload_size_bytes) {
+    throw new ApiError(
+      413,
+      `"${file.name}" is ${formatFileSize(file.size)}; this deployment accepts files up to ` +
+        `${formatFileSize(capabilities.max_upload_size_bytes)}.`,
+    );
+  }
+
   const formData = new FormData();
   formData.append(fieldName, file);
 

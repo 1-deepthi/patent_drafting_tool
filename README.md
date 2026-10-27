@@ -314,7 +314,9 @@ Copy from `backend/.env.example`. Never commit `.env` or `secrets/`.
 | `ENVIRONMENT` | Yes | `development` | `development` \| `production` (error detail differs) |
 | `CORS_ORIGINS` | Yes | `http://localhost:5173,http://127.0.0.1:5173` | Allowed frontend origins (no `*` in prod) |
 | `ALLOWED_HOSTS` | Yes | `localhost,127.0.0.1` | Trusted hosts (real domain in prod) |
-| `MAX_UPLOAD_SIZE_BYTES` | No | `10485760` (10 MiB) | Upload size cap |
+| `DEPLOYMENT_TARGET` | No | `self_hosted` | `self_hosted` \| `vercel` (clamps uploads below Vercel's 4.5 MB cap) |
+| `MAX_UPLOAD_SIZE_BYTES` | No | `0` (profile default) | Per-file cap; `0` = 10 MiB self-hosted / 4 MiB Vercel; explicit values are clamped on Vercel |
+| `PDF_CONVERSION_ENABLED` | No | `true` | `false` = DOCX-only deployment (no LibreOffice) |
 | `BLOCKED_UPLOAD_EXTENSIONS` | No | `.exe,.bat,.cmd,.sh,.msi,.com,.dll,.scr,.jar` | Blocked upload types |
 | `AI_PROVIDER` | No | `stub` | `stub` (placeholder) \| `gemini` (real drafting) |
 | `GEMINI_API_KEY` | If `AI_PROVIDER=gemini` | _(empty)_ | Google AI API key |

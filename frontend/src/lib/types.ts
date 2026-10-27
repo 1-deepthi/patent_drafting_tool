@@ -341,6 +341,7 @@ export interface DocumentGenerationJobOut {
   id: string;
   patent_application_id: string;
   status: DocumentGenerationJobStatus;
+  output_format: string;
   triggered_by: string;
   retried_from_job_id: string | null;
   error_message: string | null;

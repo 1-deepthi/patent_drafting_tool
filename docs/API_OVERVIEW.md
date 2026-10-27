@@ -17,6 +17,12 @@ Conventions:
 |---|---|---|---|
 | `GET` | `/` | No | Service info `{name, version, docs, health}` |
 | `GET` | `/health` | No | Firestore probe; `200 ok/connected` or `503 degraded` |
+| `GET` | `/api/config/capabilities` | No | Runtime limits: `{deployment_target, max_upload_size_bytes, max_request_body_bytes, pdf_generation_enabled}` |
+
+The frontend reads `/api/config/capabilities` once per page load, rejects
+oversized files before uploading, and hides PDF generation when the deployment
+has no LibreOffice. Uploads over the cap return `413`; PDF requests return
+`400` when `PDF_CONVERSION_ENABLED=false`.
 
 ## Auth (`/api/auth`)
 

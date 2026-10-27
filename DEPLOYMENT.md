@@ -55,7 +55,9 @@ production (`pydantic-settings`; see `backend/app/core/config.py`). Set:
 | `BOOTSTRAP_ADMIN_EMAIL` | An address you control, for the first login |
 | `CORS_ORIGINS` | The exact frontend origin, e.g. `https://app.example.com` |
 | `ALLOWED_HOSTS` | The exact backend host, e.g. `api.example.com` |
-| `MAX_UPLOAD_SIZE_BYTES` | Keep the default (10 MiB) or lower |
+| `DEPLOYMENT_TARGET` | `self_hosted`, or `vercel` (see the Vercel notes) |
+| `MAX_UPLOAD_SIZE_BYTES` | `0` for the profile default (10 MiB self-hosted, 4 MiB Vercel); lower it to restrict uploads further |
+| `PDF_CONVERSION_ENABLED` | `true` when the image has LibreOffice; `false` for a DOCX-only runtime |
 | `BLOCKED_UPLOAD_EXTENSIONS` | Keep the default deny-list |
 | `AI_PROVIDER` | `stub` unless you intend to pay for Gemini |
 | `GEMINI_API_KEY` | Only when `AI_PROVIDER=gemini`; store as a secret |
@@ -204,6 +206,41 @@ touching the backend.
   release changes document shapes, ship a read-compatible projection first
   (the pattern used by `app/services/projections.py`) and remove the old
   shape in a later release.
+
+## Vercel deployment notes
+
+Vercel is a good fit for the static frontend. It can also run the Python
+backend, but two platform limits change the shape:
+
+- request and buffered response bodies are capped at **4.5 MB**;
+- the Python runtime does **not** include LibreOffice.
+
+Two supported shapes:
+
+| Shape | Frontend | Backend | PDF |
+|---|---|---|---|
+| Split (recommended) | Vercel static | Container per §3 (Cloud Run, Fly.io, Render, …) | Yes |
+| Single vendor | Vercel static | Vercel Python function, `DEPLOYMENT_TARGET=vercel` | No, unless you use the container runtime (beta) |
+
+Running the backend as a Vercel Python function:
+
+1. Set `DEPLOYMENT_TARGET=vercel`, so the effective upload cap is 4 MiB and
+   the whole-request cap is 4.5 MB. Explicit `MAX_UPLOAD_SIZE_BYTES` values
+   above that are clamped, never honoured.
+2. Set `PDF_CONVERSION_ENABLED=false`. PDF jobs return `400`; the UI reads
+   `GET /api/config/capabilities` and hides the PDF button.
+3. Keep `CORS_ORIGINS` and `ALLOWED_HOSTS` set to the deployed domains; do not
+   widen them to `*` to work around a CORS error.
+4. Document generation is synchronous. It must finish inside the function
+   duration limit (300 s Hobby / 800 s Pro); the container shape has no such
+   ceiling.
+
+What still does not fit: files larger than the cap. Raising
+`MAX_UPLOAD_SIZE_BYTES` cannot bypass a platform limit that runs before the
+app. Supporting multi-megabyte uploads on Vercel needs a direct-to-Firebase-
+Storage flow (browser uploads the blob, API stores only metadata), which is
+not implemented. Lowering the cap is the current mitigation. Downloads are
+streamed, so a generated document larger than 4.5 MB can still be downloaded.
 
 ## What this guide deliberately does not cover
 

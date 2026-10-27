@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { apiDownload, apiFetch, ApiError } from "../lib/api";
+import {
+  apiDownload,
+  apiFetch,
+  ApiError,
+  getRuntimeCapabilities,
+  type RuntimeCapabilities,
+} from "../lib/api";
 import type {
   DocumentGenerationJobOut,
   DocumentOut,
@@ -28,6 +34,7 @@ export function DocumentGenerationPanel({
   const [generating, setGenerating] = useState<"PDF" | "DOCX" | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [capabilities, setCapabilities] = useState<RuntimeCapabilities | null>(null);
 
   async function loadDocuments() {
     try {
@@ -51,6 +58,22 @@ export function DocumentGenerationPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patentId]);
 
+  useEffect(() => {
+    let cancelled = false;
+    getRuntimeCapabilities()
+      .then((caps) => {
+        if (!cancelled) setCapabilities(caps);
+      })
+      .catch(() => {
+        // Capabilities are an enhancement; keep the full UI if the endpoint
+        // is unreachable and let the backend reject what it cannot do.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const pdfEnabled = capabilities?.pdf_generation_enabled !== false;
   const canGenerate = statusAllowsGeneration && allSectionsCompleted;
 
   async function generate(format: "PDF" | "DOCX") {
@@ -152,6 +175,11 @@ export function DocumentGenerationPanel({
           Complete AI drafting for every section above before generating documents.
         </p>
       )}
+      {capabilities && !capabilities.pdf_generation_enabled && (
+        <p className="mb-4 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
+          PDF generation is not available on this deployment. Generate a DOCX instead.
+        </p>
+      )}
 
       <div className="mb-6 flex items-center justify-between rounded-lg border border-slate-200 bg-white p-4">
         <div>
@@ -165,13 +193,15 @@ export function DocumentGenerationPanel({
         </div>
         {canGenerate && (
           <div className="flex gap-2">
-            <button
-              onClick={() => generate("PDF")}
-              disabled={generating !== null}
-              className="whitespace-nowrap rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-50"
-            >
-              {generating === "PDF" ? "Generating…" : "Generate PDF"}
-            </button>
+            {pdfEnabled && (
+              <button
+                onClick={() => generate("PDF")}
+                disabled={generating !== null}
+                className="whitespace-nowrap rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+              >
+                {generating === "PDF" ? "Generating…" : "Generate PDF"}
+              </button>
+            )}
             <button
               onClick={() => generate("DOCX")}
               disabled={generating !== null}
@@ -264,15 +294,18 @@ export function DocumentGenerationPanel({
                   {job.status}
                   {job.completed_at && ` · ${new Date(job.completed_at).toLocaleString()}`}
                 </span>
-                {job.status === "Failed" && (
-                  <button
-                    onClick={() => retry(job.id)}
-                    disabled={retrying !== null}
-                    className="rounded border border-slate-300 px-2 py-0.5 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                  >
-                    {retrying === job.id ? "Retrying…" : "Retry"}
-                  </button>
-                )}
+                {job.status === "Failed" &&
+                  (job.output_format === "PDF" && !pdfEnabled ? (
+                    <span className="text-slate-400">PDF unavailable</span>
+                  ) : (
+                    <button
+                      onClick={() => retry(job.id)}
+                      disabled={retrying !== null}
+                      className="rounded border border-slate-300 px-2 py-0.5 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {retrying === job.id ? "Retrying…" : "Retry"}
+                    </button>
+                  ))}
               </div>
             ))}
           </div>
