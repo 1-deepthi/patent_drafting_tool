@@ -34,7 +34,13 @@ sections for your platform's equivalent.
    documents are needed. Note the bucket name.
 5. **Project settings → Your apps → Web app** → register the production web
    app. Copy the six `VITE_FIREBASE_*` values for the frontend build.
-6. **Project settings → Service accounts → Generate new private key** → store
+6. From the repository root, install the Firebase CLI
+   (`npm i -g firebase-tools`), run `firebase login` and `firebase use --add`,
+   then deploy the checked-in rules with
+   `firebase deploy --only firestore:rules,storage`. They deny all direct
+   browser access because only the backend Admin SDK reads and writes
+   Firestore and Storage. Do not enable the Realtime Database.
+7. **Project settings → Service accounts → Generate new private key** → store
    the JSON in your platform's secret manager. Never commit it.
 
 Use separate Firebase projects for staging and production. Auth users,
@@ -119,7 +125,7 @@ docker build `
   --build-arg VITE_FIREBASE_API_KEY=... `
   --build-arg VITE_FIREBASE_AUTH_DOMAIN=my-project.firebaseapp.com `
   --build-arg VITE_FIREBASE_PROJECT_ID=my-project `
-  --build-arg VITE_FIREBASE_STORAGE_BUCKET=my-project.appspot.com `
+  --build-arg VITE_FIREBASE_STORAGE_BUCKET=my-project.firebasestorage.app `
   --build-arg VITE_FIREBASE_MESSAGING_SENDER_ID=... `
   --build-arg VITE_FIREBASE_APP_ID=... `
   -t patent-frontend ./frontend

@@ -30,7 +30,11 @@ Follow `backend/README.md` §2 (summary here — the backend README is authorita
 4. **Build → Storage** → enable a bucket if uploads/templates are needed. Note the bucket name.
 5. **Project settings → Service accounts → Generate new private key** → save the JSON as `backend/secrets/firebase-service-account.json` (create the `secrets/` folder; it is git-ignored).
 6. **Project settings → Your apps → Web app** → register an app and copy the six `VITE_FIREBASE_*` values.
-7. Decide your bootstrap admin email — an address you control. Never use a shared address.
+7. Install the Firebase CLI (`npm i -g firebase-tools`), run `firebase login` and `firebase use --add` from the repository root, then deploy the checked-in rules: `firebase deploy --only firestore:rules,storage`. They deny all direct browser access because only the backend Admin SDK reads and writes Firestore and Storage.
+8. Decide your bootstrap admin email — an address you control. Never use a shared address.
+
+Firestore is the only system of record (ADR-005). The Realtime Database is not
+used, even if the Web app config displays a `databaseURL`.
 
 ## 4. Configure the backend
 
@@ -83,7 +87,7 @@ VITE_API_URL=http://localhost:8000
 VITE_FIREBASE_API_KEY=...
 VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
 VITE_FIREBASE_PROJECT_ID=your-project
-VITE_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
+VITE_FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app
 VITE_FIREBASE_MESSAGING_SENDER_ID=...
 VITE_FIREBASE_APP_ID=...
 ```

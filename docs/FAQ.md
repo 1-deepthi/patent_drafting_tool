@@ -35,6 +35,17 @@ Firebase console → Project settings → Your apps → Web app → SDK setup an
 configuration. Put all six `VITE_FIREBASE_*` values in `frontend/.env`. They
 are public identifiers, not secrets.
 
+**Do I need the Realtime Database?**
+No. Firestore is the only system of record (ADR-005); the `databaseURL` in the
+Web app config is unused. All reads and writes go through the API.
+
+**Why do `firestore.rules` and `storage.rules` deny everything?**
+The browser signs in with Firebase Auth and then talks only to the FastAPI
+backend. Firestore and Storage are reached by the Admin SDK, which bypasses
+Security Rules. Denying every client request keeps the public Web API key from
+becoming a data-access key. Deploy the rules with
+`firebase deploy --only firestore:rules,storage`.
+
 **Why do I get `403 awaiting approval`?**
 New accounts are pending until an Admin approves them. The
 `BOOTSTRAP_ADMIN_EMAIL` address becomes Super Admin on first sign-in and can

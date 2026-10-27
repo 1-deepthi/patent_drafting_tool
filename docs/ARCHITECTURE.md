@@ -28,7 +28,7 @@
 
 - **Frontend** (`frontend/`): React 18 SPA, React Router role-guarded routes, React Query, Hook Form + Zod. Firebase JS SDK performs Google sign-in; `VITE_*` values are baked at build time, so there is no runtime env.
 - **Backend** (`backend/app/main.py`): FastAPI with a `lifespan` that attempts `initialize_firebase()` but never blocks boot. `/health` probes Firestore. Mounts exactly two routers: `auth` (`/api/auth`) and `resources` (`/api`). CORS + TrustedHost middleware; a generic 500 handler that stays terse in production.
-- **Firebase**: Authentication is the identity provider; Firestore is the system of record; Storage holds blobs. The Admin SDK runs privileged, so Firestore Security Rules do **not** replace backend authorization.
+- **Firebase**: Authentication is the identity provider; Firestore is the system of record; Storage holds blobs. The browser uses Firebase Auth only — all data access goes through the API, whose Admin SDK runs privileged. The checked-in `firestore.rules` and `storage.rules` therefore deny every direct client read and write; Security Rules do **not** replace backend authorization. The Realtime Database is not used.
 
 ## 2. Request lifecycle
 

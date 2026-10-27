@@ -180,6 +180,9 @@ patent_drafting_tool/
 ├── CHANGELOG.md               # Release history (Keep a Changelog)
 ├── DEPLOYMENT.md              # Production deployment guide
 ├── docker-compose.yml         # Local backend + frontend (Firebase external)
+├── firebase.json              # Firestore + Storage rules deploy config
+├── firestore.rules            # Deny all direct client access
+├── storage.rules              # Deny all direct client access
 ├── docs/
 │   ├── GETTING_STARTED.md     # Step-by-step first run
 │   ├── ARCHITECTURE.md        # System, auth, data, and workflow design
@@ -240,7 +243,7 @@ patent_drafting_tool/
 | Node | 20.x (see `frontend/Dockerfile` build stage) | `node --version` |
 | npm | 10+ | Ships with Node 20 |
 | Docker + Compose | 24+ / v2 | Only for Option A |
-| Firebase project | Firestore + Authentication (+ Storage for uploads) | See `backend/README.md` §2 |
+| Firebase project | Firestore + Authentication (+ Storage for uploads); no Realtime Database | See `backend/README.md` §2 |
 
 ### 7.2 Option A — Docker Compose
 
@@ -291,10 +294,11 @@ Full step-by-step walkthrough: [`docs/GETTING_STARTED.md`](./docs/GETTING_STARTE
 
 1. Set `BOOTSTRAP_ADMIN_EMAIL` in `backend/.env` to an email you control.
 2. Save your Firebase service-account JSON to `backend/secrets/firebase-service-account.json` (git-ignored).
-3. Enable the Google provider in Firebase Authentication and register `localhost` as an authorized domain.
-4. Start the backend and frontend, then sign in with that email.
-5. Your profile is auto-created as `SUPER_ADMIN` + approved.
-6. Approve subsequent users via Super Admin dashboard → Pending Approvals.
+3. From the repository root, run `firebase login`, `firebase use --add`, and `firebase deploy --only firestore:rules,storage` (one-time per project). The rules deny direct browser access; the backend Admin SDK bypasses them.
+4. Enable the Google provider in Firebase Authentication and register `localhost` as an authorized domain.
+5. Start the backend and frontend, then sign in with that email.
+6. Your profile is auto-created as `SUPER_ADMIN` + approved.
+7. Approve subsequent users via Super Admin dashboard → Pending Approvals.
 
 ---
 
@@ -335,11 +339,13 @@ Copy from `frontend/.env.example`. `VITE_*` values are **baked at build time**.
 | `VITE_FIREBASE_API_KEY` | Yes | Web SDK config from Firebase console → Project settings → Your apps |
 | `VITE_FIREBASE_AUTH_DOMAIN` | Yes | Usually `<project>.firebaseapp.com` |
 | `VITE_FIREBASE_PROJECT_ID` | Yes | Firebase project ID |
-| `VITE_FIREBASE_STORAGE_BUCKET` | For Storage | `<project>.appspot.com` or the configured bucket |
+| `VITE_FIREBASE_STORAGE_BUCKET` | For Storage | `<project>.firebasestorage.app` (new projects) or `<project>.appspot.com` |
 | `VITE_FIREBASE_MESSAGING_SENDER_ID` | Yes | Web SDK config |
 | `VITE_FIREBASE_APP_ID` | Yes | Web SDK config |
 
 These values are public by design (they identify the Firebase project). The service-account JSON is the secret and stays server-side. Missing Web SDK values do **not** break the build: `src/lib/firebase.ts` reports a configuration error on the login screen instead.
+
+The browser uses the Web SDK for **Authentication only**. Firestore and Storage are reached exclusively by the backend Admin SDK, so the checked-in `firestore.rules` and `storage.rules` deny every direct client read and write. Deploy them with `firebase deploy --only firestore:rules,storage` after `firebase use --add`. There is no Realtime Database in this architecture.
 
 ---
 
@@ -413,7 +419,7 @@ Conventions: TypeScript `strict` + `noUnusedLocals`; functional React components
 | CI | GitHub Actions `ci.yml` | Backend on ubuntu/windows/macos × Python 3.11/3.13; frontend on the same three OSes; docs-health on ubuntu. |
 | Docker | `docker.yml` + `docs/DOCKER.md` | Image builds + backend `/health` smoke test. |
 
-The offline suite cannot prove live Firebase IAM, Firestore rules, or Storage rules. The manual checklist for a real project is in [`backend/README.md`](./backend/README.md) §7.
+The offline suite cannot prove live Firebase IAM or that the deployed `firestore.rules` / `storage.rules` match this repository. The manual checklist for a real project is in [`backend/README.md`](./backend/README.md) §7.
 
 ---
 

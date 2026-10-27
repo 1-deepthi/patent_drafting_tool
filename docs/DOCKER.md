@@ -72,7 +72,7 @@ docker build `
   --build-arg VITE_FIREBASE_API_KEY=... `
   --build-arg VITE_FIREBASE_AUTH_DOMAIN=my-project.firebaseapp.com `
   --build-arg VITE_FIREBASE_PROJECT_ID=my-project `
-  --build-arg VITE_FIREBASE_STORAGE_BUCKET=my-project.appspot.com `
+  --build-arg VITE_FIREBASE_STORAGE_BUCKET=my-project.firebasestorage.app `
   --build-arg VITE_FIREBASE_MESSAGING_SENDER_ID=... `
   --build-arg VITE_FIREBASE_APP_ID=... `
   -t patent-frontend ./frontend

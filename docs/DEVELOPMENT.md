@@ -72,6 +72,12 @@ npm run dev
   → `backend/secrets/firebase-service-account.json`. Both git-ignored.
   `config.py` uses `extra='ignore'`, so stale variables do not crash startup —
   but do not add new ones without updating `.env.example` and the docs.
+- Firebase rules are committed: `firestore.rules` and `storage.rules` deny all
+  direct client access. Deploy them with
+  `firebase deploy --only firestore:rules,storage`. Do not weaken a rule to
+  unblock a local test — the browser only uses Firebase Auth and must go
+  through the API. The Firebase CLI cache (`.firebase/`), its debug logs, and
+  admin-SDK key files are git-ignored.
 - Frontend: copy `frontend/.env.example` → `frontend/.env`. `VITE_*` bake at
   build time — changing them requires restarting `npm run dev` or rebuilding
   (`npm run build` / Docker build arg).

@@ -42,7 +42,8 @@ Get-Process -Id <PID>   # confirm it isn't something you need before touching it
 | `400` from TrustedHost | Host not in `ALLOWED_HOSTS` | Include `localhost,127.0.0.1` (or the real domain in prod) |
 | Uploads fail | Bucket unset, size cap, or blocked extension | Check `FIREBASE_STORAGE_BUCKET`, `MAX_UPLOAD_SIZE_BYTES`, backend logs (non-prod includes the reason) |
 | Draft returns placeholder text | Expected without `AI_PROVIDER=gemini` + `GEMINI_API_KEY` | Set both; otherwise the stub is the intended behaviour (ADR-004) |
-| PDF generation job fails | LibreOffice (`soffice`) not installed | Use the Docker image, or install LibreOffice locally; DOCX still works |
+| PDF generation job fails or the button is hidden | LibreOffice (`soffice`) not installed, or the deployment disables PDF | Use the Docker image or install LibreOffice; set `PDF_CONVERSION_ENABLED=true` only where it exists; DOCX still works |
+| `PERMISSION_DENIED: Missing or insufficient permissions` from a browser script | Expected — direct client access to Firestore/Storage is denied by design | Call the API instead; deploy the checked-in rules with `firebase deploy --only firestore:rules,storage` |
 
 ## Frontend
 
