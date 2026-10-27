@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from app.core.config import settings
+from app.core.errors import UnhandledErrorMiddleware
 from app.core.firebase import initialize_firebase
 from app.core.headers import SecurityHeadersMiddleware
 from app.core.limits import RequestBodyLimitMiddleware
@@ -26,7 +27,9 @@ app = FastAPI(title=settings.app_name, version='1.0.0', description='Firebase-ba
 # CORS goes near the end: it must wrap the 413 from the body guard, the 400
 # from the host check, and every route response so the browser can read them.
 # The body guard stays innermost so an oversized body is rejected before
-# routing. Security headers go on top of everything the app produces.
+# routing. Security headers go on top of everything the app produces, and the
+# catch-all error handler sits inside CORS so even a 500 is readable.
+app.add_middleware(UnhandledErrorMiddleware, production=settings.environment == 'production')
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=[x.strip() for x in settings.allowed_hosts.split(',') if x.strip()] or ['*'])
 app.add_middleware(
@@ -38,11 +41,6 @@ app.add_middleware(
     expose_headers=['Content-Disposition'],
 )
 app.add_middleware(SecurityHeadersMiddleware)
-
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception):
-    detail = 'Internal server error' if settings.environment == 'production' else f'{type(exc).__name__}: {exc}'
-    return JSONResponse(status_code=500, content={'detail': detail})
 
 @app.get('/', tags=['health'])
 def root():

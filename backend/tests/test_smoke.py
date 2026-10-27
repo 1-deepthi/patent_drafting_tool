@@ -354,6 +354,29 @@ def test_security_headers_land_on_route_and_rejection_responses(
     assert rejected.headers["x-content-type-options"] == "nosniff"
 
 
+def test_unhandled_errors_stay_readable_by_the_browser(client: TestClient) -> None:
+    from app.core import security
+    from app.main import app
+
+    def boom():
+        raise RuntimeError("boom")
+
+    app.dependency_overrides[security.current_user] = boom
+    try:
+        response = client.get(
+            "/api/auth/me", headers={"Origin": "http://localhost:5173"}
+        )
+    finally:
+        app.dependency_overrides.pop(security.current_user, None)
+
+    assert response.status_code == 500
+    assert response.json()["detail"].startswith("RuntimeError")
+    # Starlette's own Exception handler runs outside user middleware. If the
+    # catch-all regresses, the browser sees a CORS error instead of this body.
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
 def test_request_body_guard_counts_chunked_bodies(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
