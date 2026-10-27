@@ -7,7 +7,7 @@ import type {
 } from "../lib/types";
 
 interface Props {
-  patentId: number;
+  patentId: string;
   /** Mirrors the backend gate in can_generate_documents: status must be
    * "Under Review" or "Draft Generated", checked by the caller. */
   statusAllowsGeneration: boolean;
@@ -23,10 +23,10 @@ export function DocumentGenerationPanel({
 }: Props) {
   const [documents, setDocuments] = useState<DocumentOut[] | null>(null);
   const [jobs, setJobs] = useState<DocumentGenerationJobOut[] | null>(null);
-  const [versions, setVersions] = useState<Record<number, DocumentVersionOut[]>>({});
-  const [expandedDocId, setExpandedDocId] = useState<number | null>(null);
+  const [versions, setVersions] = useState<Record<string, DocumentVersionOut[]>>({});
+  const [expandedDocId, setExpandedDocId] = useState<string | null>(null);
   const [generating, setGenerating] = useState<"PDF" | "DOCX" | null>(null);
-  const [retrying, setRetrying] = useState<number | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function loadDocuments() {
@@ -72,7 +72,7 @@ export function DocumentGenerationPanel({
     }
   }
 
-  async function retry(jobId: number) {
+  async function retry(jobId: string) {
     setRetrying(jobId);
     setError(null);
     try {
@@ -91,7 +91,7 @@ export function DocumentGenerationPanel({
     }
   }
 
-  async function toggleVersions(documentId: number) {
+  async function toggleVersions(documentId: string) {
     if (expandedDocId === documentId) {
       setExpandedDocId(null);
       return;
@@ -109,7 +109,7 @@ export function DocumentGenerationPanel({
     }
   }
 
-  async function download(documentId: number, format: string) {
+  async function download(documentId: string, format: string) {
     try {
       await apiDownload(
         `/api/patents/${patentId}/documents/${documentId}/download`,
@@ -120,7 +120,7 @@ export function DocumentGenerationPanel({
     }
   }
 
-  async function downloadVersion(versionId: number, versionNumber: number) {
+  async function downloadVersion(versionId: string, versionNumber: number) {
     try {
       await apiDownload(
         `/api/patents/${patentId}/documents/versions/${versionId}/download`,

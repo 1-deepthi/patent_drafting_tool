@@ -95,8 +95,8 @@ function TabButton({
 function PendingApprovalsPanel() {
   const [pending, setPending] = useState<PendingUserOut[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedRoles, setSelectedRoles] = useState<Record<number, Set<string>>>({});
-  const [busyId, setBusyId] = useState<number | null>(null);
+  const [selectedRoles, setSelectedRoles] = useState<Record<string, Set<string>>>({});
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -111,7 +111,7 @@ function PendingApprovalsPanel() {
     load();
   }, []);
 
-  function toggleRole(userId: number, role: string) {
+  function toggleRole(userId: string, role: string) {
     setSelectedRoles((prev) => {
       const current = new Set(prev[userId] ?? []);
       if (current.has(role)) current.delete(role);
@@ -120,7 +120,7 @@ function PendingApprovalsPanel() {
     });
   }
 
-  async function approve(userId: number) {
+  async function approve(userId: string) {
     const roles = Array.from(selectedRoles[userId] ?? []);
     if (roles.length === 0) {
       setError("Select at least one role before approving.");
@@ -141,7 +141,7 @@ function PendingApprovalsPanel() {
     }
   }
 
-  async function reject(userId: number) {
+  async function reject(userId: string) {
     setBusyId(userId);
     setError(null);
     try {
@@ -457,7 +457,7 @@ function AllUsersPanel() {
     load();
   }, []);
 
-  async function assignRole(userId: number, role: string) {
+  async function assignRole(userId: string, role: string) {
     const key = `assign-${userId}-${role}`;
     setBusyKey(key);
     setError(null);
@@ -474,7 +474,7 @@ function AllUsersPanel() {
     }
   }
 
-  async function revokeRole(userId: number, role: string) {
+  async function revokeRole(userId: string, role: string) {
     const key = `revoke-${userId}-${role}`;
     setBusyKey(key);
     setError(null);

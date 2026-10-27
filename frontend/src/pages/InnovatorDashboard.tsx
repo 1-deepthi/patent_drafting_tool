@@ -14,7 +14,7 @@ import type {
 
 export default function InnovatorDashboard() {
   const [teams, setTeams] = useState<TeamOut[] | null>(null);
-  const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [newTeamName, setNewTeamName] = useState("");
   const [creatingTeam, setCreatingTeam] = useState(false);
@@ -127,7 +127,7 @@ function TeamPanel({
   teamId,
   onTeamsChanged,
 }: {
-  teamId: number;
+  teamId: string;
   onTeamsChanged: () => void;
 }) {
   const [team, setTeam] = useState<TeamDetailOut | null>(null);
@@ -178,7 +178,7 @@ function TeamPanel({
     }
   }
 
-  async function removeMember(userId: number) {
+  async function removeMember(userId: string) {
     setBusy(true);
     setError(null);
     try {
@@ -321,7 +321,7 @@ function PatentCard({ patent, onChanged }: { patent: PatentOut; onChanged: () =>
     }
   }
 
-  async function assignAgent(agentId: number) {
+  async function assignAgent(agentId: string) {
     setBusy(true);
     setError(null);
     try {

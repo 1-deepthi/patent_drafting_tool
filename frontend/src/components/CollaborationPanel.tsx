@@ -36,7 +36,7 @@ export function CollaborationPanel({
   patentId,
   canManageCalendar,
 }: {
-  patentId: number;
+  patentId: string;
   canManageCalendar: boolean;
 }) {
   const [subTab, setSubTab] = useState<SubTab>("comments");
@@ -79,7 +79,7 @@ export function CollaborationPanel({
 // Comments
 // ---------------------------------------------------------------------------
 
-function CommentsSection({ patentId }: { patentId: number }) {
+function CommentsSection({ patentId }: { patentId: string }) {
   const { user } = useAuth();
   const [comments, setComments] = useState<CommentOut[] | null>(null);
   const [text, setText] = useState("");
@@ -167,7 +167,7 @@ function CommentsSection({ patentId }: { patentId: number }) {
 // Files
 // ---------------------------------------------------------------------------
 
-function FilesSection({ patentId }: { patentId: number }) {
+function FilesSection({ patentId }: { patentId: string }) {
   const { user, hasRole } = useAuth();
   const isAdmin = hasRole("ADMIN") || hasRole("SUPER_ADMIN");
   const [files, setFiles] = useState<FileOut[] | null>(null);
@@ -293,7 +293,7 @@ const EMPTY_EVENT: CalendarEventCreate = {
   event_date: "",
 };
 
-function CalendarSection({ patentId, canManage }: { patentId: number; canManage: boolean }) {
+function CalendarSection({ patentId, canManage }: { patentId: string; canManage: boolean }) {
   const [events, setEvents] = useState<CalendarEventOut[] | null>(null);
   const [form, setForm] = useState<CalendarEventCreate>(EMPTY_EVENT);
   const [error, setError] = useState<string | null>(null);
@@ -334,7 +334,7 @@ function CalendarSection({ patentId, canManage }: { patentId: number; canManage:
     }
   }
 
-  async function remove(id: number) {
+  async function remove(id: string) {
     setBusy(true);
     setError(null);
     try {

@@ -31,7 +31,7 @@ function ReassignAgentPanel({
 }) {
   const [open, setOpen] = useState(false);
   const [agents, setAgents] = useState<AvailableAgentOut[] | null>(null);
-  const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -147,8 +147,8 @@ function ReassignAgentPanel({
  * grants them on the backend, but never edits an applicant's own data
  * from here. */
 export default function AdminPatentDetailPage() {
-  const { id } = useParams();
-  const patentId = Number(id);
+  const { id } = useParams<{ id: string }>();
+  const patentId = id ?? "";
 
   const [patent, setPatent] = useState<PatentOut | null>(null);
   const [tab, setTab] = useState<Tab>("basic-info");
