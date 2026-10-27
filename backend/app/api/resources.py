@@ -109,9 +109,13 @@ DOCUMENT_TYPE = "Patent Application"
 
 
 @router.get("/config/capabilities", tags=["Configuration"])
-def runtime_capabilities():
+def runtime_capabilities(response: Response):
     """Public runtime limits; the UI uses these to fail fast and adapt."""
-    return settings.capabilities()
+    capabilities = settings.capabilities()
+    if capabilities["pdf_generation_enabled"]:
+        capabilities["pdf_generation_enabled"] = docgen.pdf_available()
+    response.headers["Cache-Control"] = "no-store"
+    return capabilities
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +135,12 @@ def _title_map() -> dict[str, str]:
 
 
 def _clean_filename(name: str) -> str:
-    safe = PurePath(name or "download").name.replace('"', "'").replace("\n", " ")
+    safe = (
+        PurePath(name or "download")
+        .name.replace('"', "'")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
     return safe or "download"
 
 
@@ -1153,22 +1162,20 @@ def create_comment(patent_id: str, payload: dict, user: dict = Depends(active_us
 # ---------------------------------------------------------------------------
 
 
-UPLOAD_CHUNK_SIZE = 64 * 1024
+# 64 KiB bounds memory per read for both uploads and downloads.
+CHUNK_SIZE = 64 * 1024
 
 
 async def _read_upload(upload: UploadFile) -> bytes:
     """Read a file with a hard cap, including chunked bodies without a length."""
     content = bytearray()
     while True:
-        chunk = await upload.read(UPLOAD_CHUNK_SIZE)
+        chunk = await upload.read(CHUNK_SIZE)
         if not chunk:
             break
         content.extend(chunk)
         if len(content) > settings.upload_limit_bytes:
-            raise HTTPException(
-                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                upload_limit_detail(),
-            )
+            raise HTTPException(413, upload_limit_detail())  # Content Too Large
     return bytes(content)
 
 
@@ -1183,10 +1190,7 @@ def _validate_upload(upload: UploadFile, content: bytes) -> str:
     if not content:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "The uploaded file is empty.")
     if len(content) > settings.upload_limit_bytes:
-        raise HTTPException(
-            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            upload_limit_detail(),
-        )
+        raise HTTPException(413, upload_limit_detail())  # Content Too Large
     return filename
 
 
@@ -1197,7 +1201,7 @@ def _storage_guard(operation):
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
 
 
-def _chunks(stream, chunk_size: int = UPLOAD_CHUNK_SIZE):
+def _chunks(stream, chunk_size: int = CHUNK_SIZE):
     try:
         while True:
             chunk = stream.read(chunk_size)
@@ -1419,10 +1423,16 @@ def _ensure_format_supported(output_format: str) -> None:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "output_format must be PDF or DOCX."
         )
-    if output_format == "PDF" and not settings.pdf_conversion_enabled:
+    if output_format == "PDF" and not settings.pdf_generation_enabled:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "PDF generation is disabled on this deployment. Generate a DOCX instead.",
+        )
+    if output_format == "PDF" and not docgen.pdf_available():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "PDF conversion requires LibreOffice on the API host. "
+            "Generate a DOCX instead.",
         )
 
 

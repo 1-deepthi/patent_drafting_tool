@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     firebase_service_account_path: str = 'secrets/firebase-service-account.json'
     # Inline JSON for hosts that cannot mount a file (Vercel, Cloud Run secrets).
     # Takes precedence over the path; store it in the platform's secret manager.
-    firebase_service_account_json: str = ''
+    firebase_service_account_json: str = Field(default='', repr=False)
     firebase_storage_bucket: str = ''
     firebase_emulator_host: str = ''
     bootstrap_admin_email: str = ''
@@ -32,8 +32,9 @@ class Settings(BaseSettings):
     # 0 means "use the deployment target's default".
     max_upload_size_bytes: int = Field(default=0, ge=0)
     # PDF conversion shells out to LibreOffice, which serverless Python
-    # runtimes do not ship. Set false to offer DOCX only.
-    pdf_conversion_enabled: bool = True
+    # runtimes do not ship. Unset means "on except on Vercel"; set it
+    # explicitly to override either way.
+    pdf_conversion_enabled: bool | None = None
     blocked_upload_extensions: str = '.exe,.bat,.cmd,.sh,.msi,.com,.dll,.scr,.jar'
     gemini_api_key: str = ''
     gemini_model: str = 'gemini-2.0-flash'
@@ -64,13 +65,20 @@ class Settings(BaseSettings):
             limit = min(limit, VERCEL_BODY_LIMIT_BYTES)
         return limit
 
+    @property
+    def pdf_generation_enabled(self) -> bool:
+        """Whether this deployment can shell out to LibreOffice."""
+        if self.pdf_conversion_enabled is not None:
+            return self.pdf_conversion_enabled
+        return self.deployment_target != 'vercel'
+
     def capabilities(self) -> dict:
         """Public runtime limits the frontend uses to fail fast and adapt."""
         return {
             'deployment_target': self.deployment_target,
             'max_upload_size_bytes': self.upload_limit_bytes,
             'max_request_body_bytes': self.request_body_limit_bytes,
-            'pdf_generation_enabled': self.pdf_conversion_enabled,
+            'pdf_generation_enabled': self.pdf_generation_enabled,
         }
 
 

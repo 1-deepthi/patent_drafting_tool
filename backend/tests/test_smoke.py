@@ -234,10 +234,17 @@ def test_capabilities_are_public_and_describe_the_limits(client: TestClient) -> 
     response = client.get("/api/config/capabilities")
     assert response.status_code == 200
     body = response.json()
+    assert set(body) == {
+        "deployment_target",
+        "max_upload_size_bytes",
+        "max_request_body_bytes",
+        "pdf_generation_enabled",
+    }
     assert body["deployment_target"] in {"self_hosted", "vercel"}
     assert body["max_upload_size_bytes"] > 0
     assert body["max_request_body_bytes"] >= body["max_upload_size_bytes"]
     assert isinstance(body["pdf_generation_enabled"], bool)
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_upload_limit_zero_uses_the_profile_default() -> None:
@@ -261,6 +268,14 @@ def test_explicit_upload_limits_are_kept_off_vercel() -> None:
     assert settings.upload_limit_bytes == 2 * MIB
     assert settings.request_body_limit_bytes == 2 * MIB + MULTIPART_OVERHEAD_BYTES
 
+    # A lower explicit limit is a ceiling, not a value to raise to the cap.
+    smaller = Settings(
+        deployment_target="vercel",
+        max_upload_size_bytes=1 * MIB,
+        _env_file=None,
+    )
+    assert smaller.upload_limit_bytes == 1 * MIB
+
 
 def test_vercel_profile_clamps_explicit_limits_below_the_body_cap() -> None:
     settings = Settings(
@@ -283,6 +298,32 @@ def test_request_body_guard_rejects_oversized_uploads(
     response = client.post(
         "/api/auth/sync",
         content=b"x" * (MULTIPART_OVERHEAD_BYTES * 2),
+        headers={
+            "Content-Type": "application/json",
+            "Origin": "http://localhost:5173",
+        },
+    )
+    assert response.status_code == 413
+    assert "too large" in response.json()["detail"]
+    # The guard must sit inside CORS, or the browser sees a CORS error
+    # instead of the 413 detail.
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_request_body_guard_counts_chunked_bodies(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "max_upload_size_bytes", 1024)
+
+    def chunks():
+        for _ in range(3):
+            yield b"x" * MULTIPART_OVERHEAD_BYTES
+
+    response = client.post(
+        "/api/auth/sync",
+        content=chunks(),
         headers={"Content-Type": "application/json"},
     )
     assert response.status_code == 413
@@ -300,6 +341,32 @@ def test_read_upload_stops_one_chunk_past_the_limit(
     with pytest.raises(HTTPException) as exc:
         asyncio.run(resources._read_upload(upload))
     assert exc.value.status_code == 413
+
+
+def test_pdf_defaults_safely_per_deployment_target() -> None:
+    vercel = Settings(deployment_target="vercel", _env_file=None)
+    assert vercel.pdf_generation_enabled is False
+
+    local = Settings(deployment_target="self_hosted", _env_file=None)
+    assert local.pdf_generation_enabled is True
+
+    # An explicit value overrides the profile in both directions.
+    assert (
+        Settings(
+            deployment_target="vercel",
+            pdf_conversion_enabled=True,
+            _env_file=None,
+        ).pdf_generation_enabled
+        is True
+    )
+    assert (
+        Settings(
+            deployment_target="self_hosted",
+            pdf_conversion_enabled=False,
+            _env_file=None,
+        ).pdf_generation_enabled
+        is False
+    )
 
 
 def test_pdf_gate_rejects_pdf_when_conversion_is_disabled(
@@ -320,8 +387,52 @@ def test_pdf_gate_rejects_pdf_when_conversion_is_disabled(
         resources._ensure_format_supported("ODT")
 
 
+def test_chunks_streams_and_closes_the_blob() -> None:
+    from app.api import resources
+
+    class FakeStream:
+        def __init__(self, data: bytes) -> None:
+            self.buffer = BytesIO(data)
+            self.closed = False
+
+        def read(self, size: int) -> bytes:
+            return self.buffer.read(size)
+
+        def close(self) -> None:
+            self.closed = True
+
+    stream = FakeStream(b"a" * 10)
+    assert b"".join(resources._chunks(stream, chunk_size=4)) == b"a" * 10
+    assert stream.closed
+
+
+def test_capabilities_hide_pdf_when_libreoffice_is_missing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.api import resources
+
+    monkeypatch.setattr(resources.docgen, "pdf_available", lambda: False)
+    body = client.get("/api/config/capabilities").json()
+    assert body["pdf_generation_enabled"] is False
+
+
+def test_pdf_gate_reports_missing_libreoffice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import resources
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "pdf_conversion_enabled", True)
+    monkeypatch.setattr(resources.docgen, "pdf_available", lambda: False)
+    with pytest.raises(HTTPException) as exc:
+        resources._ensure_format_supported("PDF")
+    assert exc.value.status_code == 400
+    assert "LibreOffice" in str(exc.value.detail)
+
+
 def test_inline_service_account_json_is_validated() -> None:
     from app.core import firebase
+    from app.core.config import Settings
 
     assert firebase._credentials_from_json("") is None
     with pytest.raises(firebase.FirebaseNotConfigured):
@@ -331,3 +442,17 @@ def test_inline_service_account_json_is_validated() -> None:
     # Parsed JSON that is not a usable certificate also fails as configuration.
     with pytest.raises(firebase.FirebaseNotConfigured):
         firebase._credentials_from_json('{"type": "service_account"}')
+
+    settings = Settings(
+        firebase_service_account_json='{"private_key": "super-secret"}',
+        _env_file=None,
+    )
+    assert "super-secret" not in repr(settings)
+
+
+def test_download_filenames_cannot_break_headers() -> None:
+    from app.api import resources
+
+    cleaned = resources._clean_filename('report"\r\nX-Injected: 1.csv')
+    assert cleaned == "report'  X-Injected: 1.csv"
+    assert resources._clean_filename("../../etc/passwd") == "passwd"

@@ -136,6 +136,11 @@ def render_docx(patent: dict, sections: dict, template: bytes | None) -> bytes:
     return _render_builtin(patent, sections)
 
 
+def pdf_available() -> bool:
+    """True when a LibreOffice binary is available for DOCX→PDF conversion."""
+    return _soffice_binary() is not None
+
+
 def _soffice_binary() -> str | None:
     for candidate in ("soffice", "libreoffice"):
         found = shutil.which(candidate)
