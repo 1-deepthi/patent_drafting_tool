@@ -55,7 +55,3 @@ def bucket():
 def verify_id_token(token: str) -> dict:
     initialize_firebase()
     return auth.verify_id_token(token, app=_app, check_revoked=True)
-
-def create_custom_token(uid: str) -> str:
-    initialize_firebase()
-    return auth.create_custom_token(uid, app=_app).decode('utf-8')

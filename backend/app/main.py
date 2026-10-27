@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from app.core.config import settings
-from app.core.firebase import initialize_firebase, FirebaseNotConfigured
+from app.core.firebase import initialize_firebase
 from app.api.auth import router as auth_router
 from app.api.resources import router as resources_router
 

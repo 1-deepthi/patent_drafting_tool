@@ -1,54 +1,150 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from app.core.security import current_user, active_user, require_roles
+"""Authentication/profile endpoints.
+
+Sign-in itself happens in the browser with the Firebase JS SDK. The API only
+verifies the resulting ID token, syncs the Firestore profile, and serves the
+Super Admin approval queue. There is no server-minted JWT and no dev login.
+"""
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+
 from app.core.firebase import db
-from app.services.repository import list_docs, patch_doc, now_iso
+from app.core.security import (
+    active_user,
+    current_user,
+    is_super_admin,
+    permissions_for,
+)
+from app.services.projections import user_out
+from app.services.rbac import ALL_ROLE_CODES
+from app.services.repository import get_doc, list_docs, now_iso, sort_docs
 
 router = APIRouter()
 
-@router.get('/me')
-def me(user: dict = Depends(current_user)):
-    return {k: v for k, v in user.items() if not k.startswith('_')}
+PROFILE_FIELDS = (
+    "full_name",
+    "phone_number",
+    "designation",
+    "organization",
+    "bio",
+    "profile_picture",
+)
 
-@router.post('/sync')
-def sync_profile(payload: dict | None = None, user: dict = Depends(current_user)):
-    """Sync the signed-in Firebase user profile. Firebase client handles sign-in."""
-    payload = payload or {}
-    allowed = {'full_name', 'phone', 'organization', 'bio'}
-    patch = {k: payload[k] for k in allowed if k in payload}
-    if patch:
-        patch['updated_at'] = now_iso()
-        db().collection('users').document(user['uid']).set(patch, merge=True)
-    snap = db().collection('users').document(user['uid']).get()
-    result = snap.to_dict() or user
-    result['uid'] = user['uid']
-    return result
 
-@router.post('/logout')
-def logout(user: dict = Depends(current_user)):
-    # The client should sign out using Firebase Auth; this revokes refresh tokens server-side.
-    from firebase_admin import auth
-    from app.core.firebase import initialize_firebase
+def _touch_last_login(user: dict) -> None:
+    """Record sign-in activity at most once every five minutes."""
+    last = user.get("last_login_at")
     try:
-        auth.revoke_refresh_tokens(user['uid'], app=initialize_firebase())
-    except Exception:
-        pass
-    return {'message': 'Server-side refresh tokens revoked. Sign out on the Firebase client as well.'}
+        parsed = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        parsed = None
+    if parsed and parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if parsed and datetime.now(timezone.utc) - parsed < timedelta(minutes=5):
+        return
+    db().collection("users").document(user["uid"]).set(
+        {"last_login_at": now_iso(), "updated_at": now_iso()}, merge=True
+    )
+    user["last_login_at"] = now_iso()
 
-@router.get('/pending-users')
-def pending_users(_: dict = Depends(require_roles('ADMIN', 'SUPER_ADMIN'))):
-    return [u for u in list_docs('users') if u.get('account_status') == 'pending']
 
-@router.post('/users/{user_id}/approve')
-def approve_user(user_id: str, admin: dict = Depends(require_roles('ADMIN', 'SUPER_ADMIN'))):
-    ref = db().collection('users').document(user_id)
-    snap = ref.get()
-    if not snap.exists: raise HTTPException(404, 'User not found.')
-    ref.set({'account_status': 'approved', 'approved_by': admin['uid'], 'approved_at': now_iso(), 'updated_at': now_iso()}, merge=True)
-    out = ref.get().to_dict() or {}; out['uid'] = user_id; return out
+@router.get("/me")
+def me(user: dict = Depends(current_user)):
+    _touch_last_login(user)
+    return {"user": user_out(user), "permissions": permissions_for(user)}
 
-@router.post('/users/{user_id}/reject')
-def reject_user(user_id: str, admin: dict = Depends(require_roles('ADMIN', 'SUPER_ADMIN'))):
-    ref = db().collection('users').document(user_id)
-    if not ref.get().exists: raise HTTPException(404, 'User not found.')
-    ref.set({'account_status': 'rejected', 'rejected_by': admin['uid'], 'updated_at': now_iso()}, merge=True)
-    out = ref.get().to_dict() or {}; out['uid'] = user_id; return out
+
+@router.post("/sync")
+def sync_profile(
+    payload: dict | None = None, user: dict = Depends(current_user)
+):
+    """Upsert the profile fields the client owns and return the full session."""
+    payload = payload or {}
+    patch = {key: payload[key] for key in PROFILE_FIELDS if key in payload}
+    patch["last_login_at"] = now_iso()
+    patch["updated_at"] = now_iso()
+    db().collection("users").document(user["uid"]).set(patch, merge=True)
+    user.update(patch)
+    return {"user": user_out(user), "permissions": permissions_for(user)}
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(user: dict = Depends(current_user)):
+    """Firebase sessions are revoked client-side; this endpoint is a no-op ACK."""
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/pending-users")
+def pending_users(user: dict = Depends(active_user)):
+    if not is_super_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin access required.")
+    pending = [
+        doc
+        for doc in list_docs("users")
+        if (doc.get("account_status") or "pending") == "pending"
+    ]
+    pending = sort_docs(pending, "created_at")
+    return [
+        {
+            "id": doc["id"],
+            "email": doc.get("email") or "",
+            "full_name": doc.get("full_name") or "",
+            "organization": doc.get("organization"),
+            "created_at": doc.get("created_at"),
+        }
+        for doc in pending
+    ]
+
+
+@router.post("/users/{user_id}/approve")
+def approve_user(
+    user_id: str, payload: dict | None = None, user: dict = Depends(active_user)
+):
+    if not is_super_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin access required.")
+    payload = payload or {}
+    role_codes = [str(code).upper() for code in payload.get("role_codes") or []]
+    if not role_codes:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Select at least one role.")
+    unknown = sorted(set(role_codes) - set(ALL_ROLE_CODES))
+    if unknown:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Unknown role code(s): {', '.join(unknown)}.",
+        )
+    target = get_doc("users", user_id)
+    db().collection("users").document(user_id).set(
+        {
+            "account_status": "approved",
+            "role_codes": sorted(set(role_codes)),
+            "is_active": True,
+            "approved_by": user["uid"],
+            "approved_at": now_iso(),
+            "updated_at": now_iso(),
+        },
+        merge=True,
+    )
+    target.update(
+        {"account_status": "approved", "role_codes": sorted(set(role_codes))}
+    )
+    return user_out(target)
+
+
+@router.post("/users/{user_id}/reject")
+def reject_user(
+    user_id: str, payload: dict | None = None, user: dict = Depends(active_user)
+):
+    if not is_super_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin access required.")
+    target = get_doc("users", user_id)
+    db().collection("users").document(user_id).set(
+        {
+            "account_status": "rejected",
+            "rejected_by": user["uid"],
+            "rejected_at": now_iso(),
+            "updated_at": now_iso(),
+        },
+        merge=True,
+    )
+    target.update({"account_status": "rejected"})
+    return user_out(target)

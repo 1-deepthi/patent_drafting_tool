@@ -1,411 +1,2115 @@
-"""Firebase-backed resource endpoints. Documents use string IDs and explicit owner IDs."""
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+"""Firestore-backed resource API.
+
+Every endpoint the React client calls is implemented here against Firebase
+Auth/Firestore/Storage. Response shapes intentionally match the original
+snake_case REST contract (string IDs, Title-Case lifecycle statuses,
+`roles`, `invention_title`, ...) so the existing UI keeps working without a
+parallel compatibility layer.
+"""
+import csv
+import io
+import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import PurePath
-from app.core.security import active_user, current_user, require_roles, is_admin
-from app.core.firebase import db, bucket, FirebaseNotConfigured
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
+
 from app.core.config import settings
-from app.services.repository import create_doc, get_doc, list_docs, patch_doc, delete_doc, now_iso
-import uuid
+from app.core.firebase import db
+from app.core.security import (
+    active_user,
+    ensure_permission,
+    has_permission,
+    is_admin,
+    is_super_admin,
+)
+from app.services import documents as docgen
+from app.services import drafting
+from app.services.projections import (
+    CALENDAR_EVENT_TYPES,
+    PRE_ASSIGNMENT_STATUSES,
+    QUESTIONNAIRE_FIELDS,
+    REQUIRED_QUESTIONNAIRE_FIELDS,
+    TERMINAL_STATUSES,
+    active_assignment_count,
+    ai_output_out,
+    applicant_out,
+    can_edit_basic_info,
+    can_review_draft,
+    calendar_event_out,
+    comment_out,
+    document_job_out,
+    document_out,
+    document_version_out,
+    file_out,
+    inventor_out,
+    is_patent_creator,
+    is_team_member,
+    log_activity,
+    notification_out,
+    notify_admins,
+    notify_many,
+    patent_out,
+    patent_participants,
+    questionnaire_completion,
+    questionnaire_out,
+    questionnaire_version_out,
+    require_patent,
+    team_detail_out,
+    team_out,
+    template_out,
+    upcoming_events,
+    user_out,
+    visible_patents,
+)
+from app.services.rbac import (
+    ALL_ROLE_CODES,
+    PATENT_AGENT,
+    REPORT_TYPE_NAMES,
+    REPORT_TYPES,
+    can_download_report,
+    matrix,
+    report_matrix,
+    toggle_grant,
+    toggle_report_permission,
+)
+from app.services.repository import (
+    create_doc,
+    delete_doc,
+    get_doc,
+    list_docs,
+    now_iso,
+    patch_doc,
+    query_docs,
+    sort_docs,
+)
+from app.services.storage import StorageError, delete_path, put_bytes, read_bytes
 
 router = APIRouter()
 
-def _visible(item: dict, user: dict) -> bool:
-    return is_admin(user) or item.get('created_by') == user['uid'] or item.get('owner_uid') == user['uid'] or user['uid'] in item.get('member_uids', []) or item.get('assigned_agent_uid') == user['uid']
+DOCUMENT_TYPE = "Patent Application"
 
-def _read(collection: str, user: dict, limit: int = 100):
-    return [x for x in list_docs(collection, limit=limit) if _visible(x, user)]
 
-def _create(collection: str, body: dict, user: dict):
-    body = dict(body)
-    for protected in ('id', 'created_by', 'owner_uid', 'role_codes', 'account_status', 'assigned_agent_uid', 'assigned_by'):
-        body.pop(protected, None)
-    body['created_by'] = user['uid']
-    body['owner_uid'] = user['uid']
-    return create_doc(collection, body)
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 
-def _owned_get(collection: str, item_id: str, user: dict):
-    item = get_doc(collection, item_id)
-    if not _visible(item, user): raise HTTPException(403, 'You do not have access to this resource.')
-    return item
 
+def _users_by_id() -> dict[str, dict]:
+    return {doc["id"]: doc for doc in list_docs("users")}
+
+
+def _title_map() -> dict[str, str]:
+    return {
+        doc["id"]: doc.get("invention_title") or ""
+        for doc in list_docs("patents")
+    }
+
+
+def _clean_filename(name: str) -> str:
+    safe = PurePath(name or "download").name.replace('"', "'").replace("\n", " ")
+    return safe or "download"
+
+
+def _content_disposition(filename: str) -> dict[str, str]:
+    return {"Content-Disposition": f'attachment; filename="{_clean_filename(filename)}"'}
+
+
+def _now() -> str:
+    return now_iso()
+
+
+def _set_patent(patent_id: str, fields: dict) -> dict:
+    return patch_doc("patents", patent_id, fields)
+
+
+def _parse_iso(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Dates must be ISO-8601 timestamps."
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.isoformat()
+
+
+def _clean_text(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _agent_or_404(agent_id: str) -> dict:
+    snap = db().collection("users").document(str(agent_id)).get()
+    if not snap.exists:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Patent Agent not found.")
+    agent = snap.to_dict() or {}
+    if (
+        PATENT_AGENT not in (agent.get("role_codes") or [])
+        or agent.get("account_status") != "approved"
+    ):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "The selected user is not an approved Patent Agent.",
+        )
+    agent["id"] = snap.id
+    return agent
+
+
+def _available_agents() -> list[dict]:
+    agents = [
+        doc
+        for doc in list_docs("users")
+        if PATENT_AGENT in (doc.get("role_codes") or [])
+        and doc.get("account_status") == "approved"
+    ]
+    rows = [
+        {
+            "id": agent["id"],
+            "full_name": agent.get("full_name") or "",
+            "email": agent.get("email") or "",
+            "active_assignment_count": active_assignment_count(agent["id"]),
+        }
+        for agent in agents
+    ]
+    return sorted(
+        rows, key=lambda row: (row["active_assignment_count"], row["full_name"].lower())
+    )
+
+
+def _visible_team(team_id: str, user: dict) -> dict:
+    snap = db().collection("teams").document(str(team_id)).get()
+    if not snap.exists:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Team not found.")
+    team = snap.to_dict() or {}
+    team["id"] = snap.id
+    if not (
+        is_admin(user)
+        or team.get("created_by") == user["uid"]
+        or is_team_member(team["id"], user["uid"])
+    ):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this team.")
+    return team
+
+
+def _questionnaire(patent_id: str) -> dict:
+    found = query_docs(
+        "questionnaires", filters=[("patent_application_id", "==", patent_id)], limit=1
+    )
+    if found:
+        return found[0]
+    return create_doc(
+        "questionnaires",
+        {
+            "patent_application_id": patent_id,
+            "questionnaire_status": "Not Started",
+            "completion_percentage": "0.00",
+        },
+    )
+
+
+def _questionnaire_payload(questionnaire: dict) -> dict:
+    return questionnaire_out(questionnaire)
+
+
+def _assert_basic_info_editable(patent: dict, user: dict) -> None:
+    if patent.get("application_status") != "Draft":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Basic information is read-only after the application is submitted.",
+        )
+    if not can_edit_basic_info(patent, user):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Only the application owner (or an Admin) can edit basic information.",
+        )
+
+
+def _ordered_items(
+    collection: str, patent_id: str, order_field: str
+) -> list[dict]:
+    items = query_docs(
+        collection, filters=[("patent_application_id", "==", patent_id)]
+    )
+    return sorted(items, key=lambda doc: (doc.get(order_field) or 0, doc["id"]))
+
+
+def _validate_ids(ordered_ids: list[str], existing: list[dict]) -> None:
+    existing_ids = {doc["id"] for doc in existing}
+    if set(ordered_ids) != existing_ids or len(ordered_ids) != len(existing):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "ordered_ids must contain every item exactly once.",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Teams
-@router.post('/teams', status_code=201)
-def create_team(body: dict, user: dict = Depends(active_user)):
-    body.setdefault('member_uids', [user['uid']]); body.setdefault('team_name', body.get('name', ''))
-    return _create('teams', body, user)
-@router.get('/teams')
+# ---------------------------------------------------------------------------
+
+
+@router.get("/teams")
 def list_teams(user: dict = Depends(active_user)):
-    return _read('teams', user)
-@router.get('/teams/{team_id}')
+    ensure_permission(user, "TEAMS_VIEW")
+    teams = list_docs("teams")
+    if not is_admin(user):
+        teams = [
+            team
+            for team in teams
+            if team.get("created_by") == user["uid"]
+            or is_team_member(team["id"], user["uid"])
+        ]
+    teams = sort_docs(teams, "created_at")
+    return [team_out(team) for team in teams]
+
+
+@router.post("/teams", status_code=status.HTTP_201_CREATED)
+def create_team(payload: dict, user: dict = Depends(active_user)):
+    ensure_permission(user, "TEAMS_MANAGE")
+    name = (payload.get("team_name") or "").strip()
+    if not name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "team_name is required.")
+    team = create_doc(
+        "teams",
+        {
+            "team_name": name,
+            "team_status": "Active",
+            "created_by": user["uid"],
+        },
+    )
+    db().collection("teams").document(team["id"]).collection("members").document(
+        user["uid"]
+    ).set(
+        {
+            "user_id": user["uid"],
+            "membership_status": "Active",
+            "added_by": user["uid"],
+            "created_at": _now(),
+        }
+    )
+    log_activity(user["uid"], "TeamCreated", "Team", team["id"])
+    return team_out(team)
+
+
+@router.get("/teams/{team_id}")
 def get_team(team_id: str, user: dict = Depends(active_user)):
-    return _owned_get('teams', team_id, user)
-@router.patch('/teams/{team_id}')
-def update_team(team_id: str, body: dict, user: dict = Depends(active_user)):
-    item = _owned_get('teams', team_id, user)
-    if not is_admin(user) and item.get('owner_uid') != user['uid']: raise HTTPException(403, 'Only the team owner or an administrator can update this team.')
-    for protected in ('id', 'created_by', 'owner_uid', 'member_uids'):
-        body.pop(protected, None)
-    return patch_doc('teams', team_id, body)
-@router.post('/teams/{team_id}/members', status_code=201)
-def add_team_member(team_id: str, body: dict, user: dict = Depends(active_user)):
-    item = _owned_get('teams', team_id, user)
-    if not is_admin(user) and item.get('owner_uid') != user['uid']: raise HTTPException(403, 'Only the team owner or an administrator can manage members.')
-    uid = str(body.get('uid') or body.get('user_id') or '')
-    if not uid: raise HTTPException(422, 'uid is required.')
-    members = list(set(item.get('member_uids', []) + [uid]))
-    return patch_doc('teams', team_id, {'member_uids': members})
-@router.delete('/teams/{team_id}/members/{user_id}')
-def remove_team_member(team_id: str, user_id: str, user: dict = Depends(active_user)):
-    item = _owned_get('teams', team_id, user)
-    if not is_admin(user) and item.get('owner_uid') != user['uid']: raise HTTPException(403, 'Only the team owner or an administrator can manage members.')
-    return patch_doc('teams', team_id, {'member_uids': [x for x in item.get('member_uids', []) if x != user_id]})
+    ensure_permission(user, "TEAMS_VIEW")
+    return team_detail_out(_visible_team(team_id, user))
 
-# Patents and assignment workflow
-@router.post('/patents', status_code=201)
-def create_patent(body: dict, user: dict = Depends(active_user)):
-    body.setdefault('title', 'Untitled patent application'); body.setdefault('status', 'draft'); body.setdefault('workflow_status', 'draft')
-    return _create('patents', body, user)
-@router.get('/patents')
+
+@router.post("/teams/{team_id}/members", status_code=status.HTTP_201_CREATED)
+def add_team_member(team_id: str, payload: dict, user: dict = Depends(active_user)):
+    ensure_permission(user, "TEAMS_MANAGE")
+    team = _visible_team(team_id, user)
+    if not (is_admin(user) or team.get("created_by") == user["uid"]):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the team owner can add members."
+        )
+    email = (payload.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "email is required.")
+    matches = [
+        doc for doc in list_docs("users") if (doc.get("email") or "").lower() == email
+    ]
+    if not matches:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "No account exists for that email yet. Ask them to sign in first.",
+        )
+    member = matches[0]
+    db().collection("teams").document(team_id).collection("members").document(
+        member["id"]
+    ).set(
+        {
+            "user_id": member["id"],
+            "membership_status": "Active",
+            "added_by": user["uid"],
+            "created_at": _now(),
+        },
+        merge=True,
+    )
+    return team_detail_out(team)
+
+
+@router.delete("/teams/{team_id}/members/{member_id}")
+def remove_team_member(
+    team_id: str, member_id: str, user: dict = Depends(active_user)
+):
+    ensure_permission(user, "TEAMS_MANAGE")
+    team = _visible_team(team_id, user)
+    if not (is_admin(user) or team.get("created_by") == user["uid"]):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the team owner can remove members."
+        )
+    if str(member_id) == str(team.get("created_by")):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "The team owner cannot be removed."
+        )
+    ref = (
+        db().collection("teams").document(team_id).collection("members").document(
+            str(member_id)
+        )
+    )
+    if not ref.get().exists:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Team member not found.")
+    ref.delete()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Patent applications
+# ---------------------------------------------------------------------------
+
+
+@router.get("/patents/available-agents")
+def available_agents(user: dict = Depends(active_user)):
+    ensure_permission(user, "PATENTS_ASSIGN")
+    return _available_agents()
+
+
+@router.get("/patents")
 def list_patents(user: dict = Depends(active_user)):
-    return _read('patents', user)
-@router.get('/patents/available-agents')
-def available_agents(_: dict = Depends(require_roles('ADMIN', 'SUPER_ADMIN'))):
-    return [u for u in list_docs('users') if 'PATENT_AGENT' in u.get('role_codes', []) and u.get('account_status') == 'approved']
-@router.get('/patents/{patent_id}')
+    ensure_permission(user, "PATENTS_VIEW")
+    return [patent_out(doc) for doc in sort_docs(visible_patents(user), "created_at", reverse=True)]
+
+
+@router.post("/patents", status_code=status.HTTP_201_CREATED)
+def create_patent(payload: dict, user: dict = Depends(active_user)):
+    ensure_permission(user, "PATENTS_CREATE")
+    title = (payload.get("invention_title") or "").strip()
+    team_id = payload.get("team_id")
+    if not title:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invention_title is required.")
+    if not team_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "team_id is required.")
+    _visible_team(str(team_id), user)
+
+    patent = create_doc(
+        "patents",
+        {
+            "team_id": str(team_id),
+            "invention_title": title,
+            "application_status": "Draft",
+            "assigned_patent_agent_id": None,
+            "ai_status": "Not Started",
+            "questionnaire_status": "Not Started",
+            "document_status": "Not Started",
+            "filing_status": "Not Started",
+            "official_application_number": None,
+            "filing_date": None,
+            "created_by": user["uid"],
+        },
+    )
+    create_doc(
+        "questionnaires",
+        {
+            "patent_application_id": patent["id"],
+            "questionnaire_status": "Not Started",
+            "completion_percentage": "0.00",
+        },
+    )
+    log_activity(user["uid"], "PatentCreated", "PatentApplication", patent["id"])
+    return patent_out(patent)
+
+
+@router.get("/patents/{patent_id}")
 def get_patent(patent_id: str, user: dict = Depends(active_user)):
-    return _owned_get('patents', patent_id, user)
-@router.patch('/patents/{patent_id}')
-def update_patent(patent_id: str, body: dict, user: dict = Depends(active_user)):
-    item = _owned_get('patents', patent_id, user)
-    if item.get('workflow_status') in {'submitted', 'under_review', 'approved'} and not is_admin(user) and 'PATENT_AGENT' not in user.get('role_codes', []):
-        raise HTTPException(409, 'This application is no longer editable by the innovator.')
-    for protected in ('id', 'created_by', 'owner_uid', 'assigned_agent_uid', 'assigned_by', 'assignment_status', 'workflow_status', 'status'):
-        body.pop(protected, None)
-    return patch_doc('patents', patent_id, body)
-@router.post('/patents/{patent_id}/submit')
+    ensure_permission(user, "PATENTS_VIEW")
+    return patent_out(require_patent(patent_id, user))
+
+
+@router.post("/patents/{patent_id}/submit")
 def submit_patent(patent_id: str, user: dict = Depends(active_user)):
-    item = _owned_get('patents', patent_id, user)
-    if not is_admin(user) and item.get('created_by') != user['uid']: raise HTTPException(403, 'Only the owner can submit this application.')
-    return patch_doc('patents', patent_id, {'status': 'submitted', 'workflow_status': 'submitted', 'submitted_at': now_iso()})
-@router.post('/patents/{patent_id}/assign')
-def assign_agent(patent_id: str, body: dict, admin: dict = Depends(require_roles('ADMIN', 'SUPER_ADMIN'))):
-    agent_uid = str(body.get('agent_uid') or body.get('agent_id') or '')
-    if not agent_uid: raise HTTPException(422, 'agent_uid is required.')
-    agent = db().collection('users').document(agent_uid).get()
-    if not agent.exists or 'PATENT_AGENT' not in (agent.to_dict() or {}).get('role_codes', []): raise HTTPException(400, 'An existing Patent Agent uid is required.')
-    return patch_doc('patents', patent_id, {'assigned_agent_uid': agent_uid, 'assigned_by': admin['uid'], 'assignment_status': 'pending', 'assigned_at': now_iso()})
-@router.post('/patents/{patent_id}/reassign')
-def reassign_agent(patent_id: str, body: dict, admin: dict = Depends(require_roles('ADMIN', 'SUPER_ADMIN'))):
-    return assign_agent(patent_id, body, admin)
-@router.post('/patents/{patent_id}/auto-assign')
-def auto_assign_agent(patent_id: str, admin: dict = Depends(require_roles('ADMIN', 'SUPER_ADMIN'))):
-    agents = [u for u in list_docs('users') if 'PATENT_AGENT' in u.get('role_codes', []) and u.get('account_status') == 'approved']
-    if not agents: raise HTTPException(409, 'No approved Patent Agents are available.')
-    agents.sort(key=lambda u: u.get('active_assignment_count', 0))
-    return patch_doc('patents', patent_id, {'assigned_agent_uid': agents[0].get('uid') or agents[0]['id'], 'assigned_by': admin['uid'], 'assignment_status': 'pending', 'assigned_at': now_iso()})
-@router.post('/patents/{patent_id}/assignment/accept')
+    ensure_permission(user, "PATENTS_SUBMIT")
+    patent = require_patent(patent_id, user)
+    if not (is_patent_creator(patent, user) or is_admin(user)):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the application owner can submit it."
+        )
+    if patent.get("application_status") != "Draft":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Only Draft applications can be submitted.",
+        )
+    updated = _set_patent(patent_id, {"application_status": "Submitted"})
+    notify_admins(patent_id, "Submitted")
+    log_activity(user["uid"], "PatentSubmitted", "PatentApplication", patent_id)
+    return patent_out(updated)
+
+
+@router.post("/patents/{patent_id}/assign")
+def assign_agent(patent_id: str, payload: dict, user: dict = Depends(active_user)):
+    ensure_permission(user, "PATENTS_ASSIGN")
+    patent = require_patent(patent_id, user)
+    if not (is_patent_creator(patent, user) or is_admin(user)):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the application owner can assign an agent."
+        )
+    if patent.get("application_status") not in {
+        "Submitted",
+        "Awaiting Patent Agent Acceptance",
+    }:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "An agent can only be assigned after submission and before acceptance.",
+        )
+    agent_id = payload.get("patent_agent_id")
+    if not agent_id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "patent_agent_id is required."
+        )
+    _agent_or_404(str(agent_id))
+    updated = _set_patent(
+        patent_id,
+        {
+            "assigned_patent_agent_id": str(agent_id),
+            "application_status": "Awaiting Patent Agent Acceptance",
+        },
+    )
+    notify_many({str(agent_id)}, patent_id, "Assigned")
+    log_activity(user["uid"], "AgentAssigned", "PatentApplication", patent_id)
+    return patent_out(updated)
+
+
+@router.post("/patents/{patent_id}/auto-assign")
+def auto_assign_agent(patent_id: str, user: dict = Depends(active_user)):
+    ensure_permission(user, "PATENTS_ASSIGN")
+    patent = require_patent(patent_id, user)
+    if not (is_patent_creator(patent, user) or is_admin(user)):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the application owner can assign an agent."
+        )
+    if patent.get("application_status") not in {
+        "Submitted",
+        "Awaiting Patent Agent Acceptance",
+    }:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "An agent can only be assigned after submission and before acceptance.",
+        )
+    agents = _available_agents()
+    if not agents:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "No approved Patent Agents are available."
+        )
+    agent_id = agents[0]["id"]
+    updated = _set_patent(
+        patent_id,
+        {
+            "assigned_patent_agent_id": agent_id,
+            "application_status": "Awaiting Patent Agent Acceptance",
+        },
+    )
+    notify_many({agent_id}, patent_id, "Assigned")
+    log_activity(user["uid"], "AgentAutoAssigned", "PatentApplication", patent_id)
+    return patent_out(updated)
+
+
+@router.post("/patents/{patent_id}/reassign")
+def reassign_agent(patent_id: str, payload: dict, user: dict = Depends(active_user)):
+    ensure_permission(user, "PATENTS_REASSIGN")
+    if not is_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin access required.")
+    patent = require_patent(patent_id, user)
+    current = patent.get("application_status")
+    if current in PRE_ASSIGNMENT_STATUSES or current in TERMINAL_STATUSES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "This application is not in a reassignable state.",
+        )
+    agent_id = payload.get("patent_agent_id")
+    reason = (payload.get("reason") or "").strip()
+    if not agent_id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "patent_agent_id is required."
+        )
+    if not reason:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "A reassignment reason is required."
+        )
+    _agent_or_404(str(agent_id))
+    previous = patent.get("assigned_patent_agent_id")
+    updated = _set_patent(
+        patent_id,
+        {
+            "assigned_patent_agent_id": str(agent_id),
+            "application_status": "Awaiting Patent Agent Acceptance",
+        },
+    )
+    create_doc(
+        "assignment_history",
+        {
+            "patent_application_id": patent_id,
+            "from_agent_id": previous,
+            "to_agent_id": str(agent_id),
+            "reason": reason,
+            "changed_by": user["uid"],
+        },
+    )
+    notify_many({str(agent_id)}, patent_id, "Assigned")
+    if previous:
+        notify_many({str(previous)}, patent_id, "Reassigned")
+    log_activity(user["uid"], "AgentReassigned", "PatentApplication", patent_id)
+    return patent_out(updated)
+
+
+@router.post("/patents/{patent_id}/assignment/accept")
 def accept_assignment(patent_id: str, user: dict = Depends(active_user)):
-    item = get_doc('patents', patent_id)
-    if item.get('assigned_agent_uid') != user['uid'] and not is_admin(user): raise HTTPException(403, 'Only the assigned agent can accept.')
-    return patch_doc('patents', patent_id, {'assignment_status': 'accepted', 'workflow_status': 'under_review', 'accepted_at': now_iso()})
-@router.post('/patents/{patent_id}/assignment/reject')
-def reject_assignment(patent_id: str, body: dict | None = None, user: dict = Depends(active_user)):
-    item = get_doc('patents', patent_id)
-    if item.get('assigned_agent_uid') != user['uid'] and not is_admin(user): raise HTTPException(403, 'Only the assigned agent can reject.')
-    return patch_doc('patents', patent_id, {'assignment_status': 'rejected', 'assignment_rejection_reason': (body or {}).get('reason', ''), 'assigned_agent_uid': None})
+    patent = require_patent(patent_id, user)
+    if patent.get("assigned_patent_agent_id") != user["uid"]:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "This application is not assigned to you."
+        )
+    if patent.get("application_status") != "Awaiting Patent Agent Acceptance":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "There is no pending assignment to accept."
+        )
+    updated = _set_patent(patent_id, {"application_status": "Under Review"})
+    notify_many({str(patent.get("created_by"))}, patent_id, "Accepted")
+    log_activity(user["uid"], "AssignmentAccepted", "PatentApplication", patent_id)
+    return patent_out(updated)
 
-# Patent subresources: basic information, questionnaire, comments, calendar, drafts, documents metadata
-for resource in ('applicants', 'inventors', 'comments', 'calendar-events', 'documents', 'draft-sections', 'questionnaire-versions'):
-    collection = resource.replace('-', '_')
-    @router.get(f'/patents/{{patent_id}}/{resource}', name=f'list_{collection}')
-    def list_subresource(patent_id: str, resource=resource, collection=collection, user: dict = Depends(active_user)):
-        _owned_get('patents', patent_id, user)
-        items = list_docs(collection)
-        return [x for x in items if x.get('patent_id') == patent_id]
-    if resource in ('applicants', 'inventors', 'comments', 'calendar-events'):
-        @router.post(f'/patents/{{patent_id}}/{resource}', status_code=201, name=f'create_{collection}')
-        def create_subresource(patent_id: str, body: dict, resource=resource, collection=collection, user: dict = Depends(active_user)):
-            _owned_get('patents', patent_id, user)
-            body = dict(body); body['patent_id'] = patent_id
-            if resource == 'comments': body['author_uid'] = user['uid']
-            if resource == 'calendar-events': body['created_by'] = user['uid']
-            return _create(collection, body, user)
 
-@router.get('/patents/{patent_id}/questionnaire')
+@router.post("/patents/{patent_id}/assignment/reject")
+def reject_assignment(
+    patent_id: str, payload: dict | None = None, user: dict = Depends(active_user)
+):
+    patent = require_patent(patent_id, user)
+    if patent.get("assigned_patent_agent_id") != user["uid"]:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "This application is not assigned to you."
+        )
+    if patent.get("application_status") != "Awaiting Patent Agent Acceptance":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "There is no pending assignment to reject."
+        )
+    payload = payload or {}
+    updated = _set_patent(
+        patent_id,
+        {
+            "assigned_patent_agent_id": None,
+            "application_status": "Submitted",
+        },
+    )
+    create_doc(
+        "assignment_history",
+        {
+            "patent_application_id": patent_id,
+            "from_agent_id": user["uid"],
+            "to_agent_id": None,
+            "reason": (payload.get("reason") or "").strip() or "Declined by agent",
+            "changed_by": user["uid"],
+        },
+    )
+    notify_many({str(patent.get("created_by"))}, patent_id, "Rejected")
+    log_activity(user["uid"], "AssignmentRejected", "PatentApplication", patent_id)
+    return patent_out(updated)
+
+
+# ---------------------------------------------------------------------------
+# Applicants and inventors
+# ---------------------------------------------------------------------------
+
+
+APPLICANT_TYPES = {"Individual", "Startup", "Company", "University"}
+APPLICANT_FIELDS = (
+    "applicant_type",
+    "full_name_or_org_name",
+    "address",
+    "country",
+    "postal_code",
+    "email",
+    "phone",
+    "is_primary",
+)
+INVENTOR_FIELDS = (
+    "full_name",
+    "address",
+    "country",
+    "postal_code",
+    "email",
+    "phone",
+)
+
+
+def _apply_primary(patent_id: str, keep_id: str) -> None:
+    for doc in query_docs(
+        "applicants", filters=[("patent_application_id", "==", patent_id)]
+    ):
+        if doc["id"] != keep_id and doc.get("is_primary"):
+            patch_doc("applicants", doc["id"], {"is_primary": False})
+
+
+@router.get("/patents/{patent_id}/applicants")
+def list_applicants(patent_id: str, user: dict = Depends(active_user)):
+    require_patent(patent_id, user)
+    return [
+        applicant_out(doc)
+        for doc in _ordered_items("applicants", patent_id, "display_order")
+    ]
+
+
+@router.post("/patents/{patent_id}/applicants", status_code=status.HTTP_201_CREATED)
+def create_applicant(patent_id: str, payload: dict, user: dict = Depends(active_user)):
+    patent = require_patent(patent_id, user)
+    _assert_basic_info_editable(patent, user)
+    applicant_type = payload.get("applicant_type") or "Individual"
+    if applicant_type not in APPLICANT_TYPES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown applicant_type.")
+    name = (payload.get("full_name_or_org_name") or "").strip()
+    if not name:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "full_name_or_org_name is required."
+        )
+    existing = _ordered_items("applicants", patent_id, "display_order")
+    data = {
+        "patent_application_id": patent_id,
+        "applicant_type": applicant_type,
+        "full_name_or_org_name": name,
+        "address": _clean_text(payload.get("address")),
+        "country": _clean_text(payload.get("country")),
+        "postal_code": _clean_text(payload.get("postal_code")),
+        "email": _clean_text(payload.get("email")),
+        "phone": _clean_text(payload.get("phone")),
+        "is_primary": bool(payload.get("is_primary")) or not existing,
+        "display_order": len(existing),
+    }
+    created = create_doc("applicants", data)
+    if created["is_primary"]:
+        _apply_primary(patent_id, created["id"])
+    return applicant_out(get_doc("applicants", created["id"]))
+
+
+@router.patch("/patents/{patent_id}/applicants/{applicant_id}")
+def update_applicant(
+    patent_id: str,
+    applicant_id: str,
+    payload: dict,
+    user: dict = Depends(active_user),
+):
+    patent = require_patent(patent_id, user)
+    _assert_basic_info_editable(patent, user)
+    applicant = get_doc("applicants", applicant_id)
+    if applicant.get("patent_application_id") != patent_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Applicant not found.")
+    data = {key: payload[key] for key in APPLICANT_FIELDS if key in payload}
+    if "applicant_type" in data and data["applicant_type"] not in APPLICANT_TYPES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown applicant_type.")
+    if "full_name_or_org_name" in data:
+        name = (data.get("full_name_or_org_name") or "").strip()
+        if not name:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "full_name_or_org_name is required."
+            )
+        data["full_name_or_org_name"] = name
+    for field in ("address", "country", "postal_code", "email", "phone"):
+        if field in data:
+            data[field] = _clean_text(data[field])
+    if data.get("is_primary") is False and applicant.get("is_primary"):
+        others = [
+            doc
+            for doc in _ordered_items("applicants", patent_id, "display_order")
+            if doc["id"] != applicant_id and doc.get("is_primary")
+        ]
+        if not others:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "At least one applicant must be primary.",
+            )
+    updated = patch_doc("applicants", applicant_id, data)
+    if updated.get("is_primary"):
+        _apply_primary(patent_id, applicant_id)
+    return applicant_out(get_doc("applicants", applicant_id))
+
+
+@router.delete("/patents/{patent_id}/applicants/{applicant_id}")
+def delete_applicant(
+    patent_id: str, applicant_id: str, user: dict = Depends(active_user)
+):
+    patent = require_patent(patent_id, user)
+    _assert_basic_info_editable(patent, user)
+    applicant = get_doc("applicants", applicant_id)
+    if applicant.get("patent_application_id") != patent_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Applicant not found.")
+    delete_doc("applicants", applicant_id)
+    remaining = _ordered_items("applicants", patent_id, "display_order")
+    if applicant.get("is_primary") and remaining:
+        patch_doc("applicants", remaining[0]["id"], {"is_primary": True})
+    for index, doc in enumerate(remaining):
+        if int(doc.get("display_order") or 0) != index:
+            patch_doc("applicants", doc["id"], {"display_order": index})
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/patents/{patent_id}/applicants/reorder")
+def reorder_applicants(
+    patent_id: str, payload: dict, user: dict = Depends(active_user)
+):
+    patent = require_patent(patent_id, user)
+    _assert_basic_info_editable(patent, user)
+    existing = _ordered_items("applicants", patent_id, "display_order")
+    ordered_ids = [str(value) for value in payload.get("ordered_ids") or []]
+    _validate_ids(ordered_ids, existing)
+    for index, item_id in enumerate(ordered_ids):
+        patch_doc("applicants", item_id, {"display_order": index})
+    return [
+        applicant_out(doc)
+        for doc in _ordered_items("applicants", patent_id, "display_order")
+    ]
+
+
+@router.get("/patents/{patent_id}/inventors")
+def list_inventors(patent_id: str, user: dict = Depends(active_user)):
+    require_patent(patent_id, user)
+    return [
+        inventor_out(doc)
+        for doc in _ordered_items("inventors", patent_id, "inventor_order")
+    ]
+
+
+@router.post("/patents/{patent_id}/inventors", status_code=status.HTTP_201_CREATED)
+def create_inventor(patent_id: str, payload: dict, user: dict = Depends(active_user)):
+    patent = require_patent(patent_id, user)
+    _assert_basic_info_editable(patent, user)
+    name = (payload.get("full_name") or "").strip()
+    if not name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "full_name is required.")
+    existing = _ordered_items("inventors", patent_id, "inventor_order")
+    data = {
+        "patent_application_id": patent_id,
+        "user_id": payload.get("user_id"),
+        "full_name": name,
+        "address": _clean_text(payload.get("address")),
+        "country": _clean_text(payload.get("country")),
+        "postal_code": _clean_text(payload.get("postal_code")),
+        "email": _clean_text(payload.get("email")),
+        "phone": _clean_text(payload.get("phone")),
+        "inventor_order": len(existing),
+    }
+    created = create_doc("inventors", data)
+    return inventor_out(created)
+
+
+@router.patch("/patents/{patent_id}/inventors/{inventor_id}")
+def update_inventor(
+    patent_id: str,
+    inventor_id: str,
+    payload: dict,
+    user: dict = Depends(active_user),
+):
+    patent = require_patent(patent_id, user)
+    _assert_basic_info_editable(patent, user)
+    inventor = get_doc("inventors", inventor_id)
+    if inventor.get("patent_application_id") != patent_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Inventor not found.")
+    data = {key: payload[key] for key in INVENTOR_FIELDS if key in payload}
+    if "full_name" in data:
+        name = (data.get("full_name") or "").strip()
+        if not name:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "full_name is required.")
+        data["full_name"] = name
+    for field in ("address", "country", "postal_code", "email", "phone"):
+        if field in data:
+            data[field] = _clean_text(data[field])
+    return inventor_out(patch_doc("inventors", inventor_id, data))
+
+
+@router.delete("/patents/{patent_id}/inventors/{inventor_id}")
+def delete_inventor(
+    patent_id: str, inventor_id: str, user: dict = Depends(active_user)
+):
+    patent = require_patent(patent_id, user)
+    _assert_basic_info_editable(patent, user)
+    inventor = get_doc("inventors", inventor_id)
+    if inventor.get("patent_application_id") != patent_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Inventor not found.")
+    delete_doc("inventors", inventor_id)
+    remaining = _ordered_items("inventors", patent_id, "inventor_order")
+    for index, doc in enumerate(remaining):
+        if int(doc.get("inventor_order") or 0) != index:
+            patch_doc("inventors", doc["id"], {"inventor_order": index})
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/patents/{patent_id}/inventors/reorder")
+def reorder_inventors(
+    patent_id: str, payload: dict, user: dict = Depends(active_user)
+):
+    patent = require_patent(patent_id, user)
+    _assert_basic_info_editable(patent, user)
+    existing = _ordered_items("inventors", patent_id, "inventor_order")
+    ordered_ids = [str(value) for value in payload.get("ordered_ids") or []]
+    _validate_ids(ordered_ids, existing)
+    for index, item_id in enumerate(ordered_ids):
+        patch_doc("inventors", item_id, {"inventor_order": index})
+    return [
+        inventor_out(doc)
+        for doc in _ordered_items("inventors", patent_id, "inventor_order")
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Questionnaire
+# ---------------------------------------------------------------------------
+
+
+@router.get("/patents/{patent_id}/questionnaire")
 def get_questionnaire(patent_id: str, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user)
-    ref = db().collection('questionnaires').document(patent_id); snap = ref.get()
-    if not snap.exists: return {'patent_id': patent_id, 'status': 'draft', 'answers': {}}
-    out = snap.to_dict() or {}; out['id'] = snap.id; return out
-@router.patch('/patents/{patent_id}/questionnaire')
-def update_questionnaire(patent_id: str, body: dict, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user)
-    payload = dict(body); payload.update({'patent_id': patent_id, 'updated_by': user['uid'], 'updated_at': now_iso()})
-    db().collection('questionnaires').document(patent_id).set(payload, merge=True)
-    out = db().collection('questionnaires').document(patent_id).get().to_dict() or {}; out['id'] = patent_id; return out
-@router.post('/patents/{patent_id}/questionnaire/submit')
+    require_patent(patent_id, user)
+    return _questionnaire_payload(_questionnaire(patent_id))
+
+
+@router.patch("/patents/{patent_id}/questionnaire")
+def update_questionnaire(
+    patent_id: str, payload: dict, user: dict = Depends(active_user)
+):
+    patent = require_patent(patent_id, user)
+    _assert_basic_info_editable(patent, user)
+    questionnaire = _questionnaire(patent_id)
+    data = {key: payload[key] for key in QUESTIONNAIRE_FIELDS if key in payload}
+    merged = {**questionnaire, **data}
+    if merged.get("questionnaire_status") == "Completed":
+        merged["questionnaire_status"] = "In Progress"
+    computed_status, percentage = questionnaire_completion(merged)
+    merged["questionnaire_status"] = computed_status
+    merged["completion_percentage"] = percentage
+    data["questionnaire_status"] = computed_status
+    data["completion_percentage"] = percentage
+    patch_doc("questionnaires", questionnaire["id"], data)
+    _set_patent(patent_id, {"questionnaire_status": computed_status})
+    return _questionnaire_payload(get_doc("questionnaires", questionnaire["id"]))
+
+
+@router.post("/patents/{patent_id}/questionnaire/submit")
 def submit_questionnaire(patent_id: str, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user)
-    ref = db().collection('questionnaires').document(patent_id); ref.set({'patent_id': patent_id, 'status': 'submitted', 'submitted_by': user['uid'], 'submitted_at': now_iso()}, merge=True)
-    return ref.get().to_dict() | {'id': patent_id}
-@router.get('/patents/{patent_id}/questionnaire/versions')
+    patent = require_patent(patent_id, user)
+    _assert_basic_info_editable(patent, user)
+    questionnaire = _questionnaire(patent_id)
+    missing = [
+        field
+        for field in REQUIRED_QUESTIONNAIRE_FIELDS
+        if questionnaire.get(field) in (None, "", [], False)
+    ]
+    if missing:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Complete the required questionnaire fields first: "
+            + ", ".join(field.replace("_", " ") for field in missing)
+            + ".",
+        )
+    versions = query_docs(
+        "questionnaire_versions",
+        filters=[("patent_application_id", "==", patent_id)],
+    )
+    version_number = 1 + max(
+        [int(doc.get("version_number") or 0) for doc in versions] or [0]
+    )
+    snapshot = {
+        "questionnaire_id": questionnaire["id"],
+        "patent_application_id": patent_id,
+        "version_number": version_number,
+        "version_status": "Completed",
+        "change_reason": "Submitted by the applicant",
+        "created_by": user["uid"],
+        **{field: questionnaire.get(field) for field in QUESTIONNAIRE_FIELDS},
+    }
+    create_doc("questionnaire_versions", snapshot)
+    patch_doc(
+        "questionnaires",
+        questionnaire["id"],
+        {
+            "questionnaire_status": "Completed",
+            "completion_percentage": "100.00",
+        },
+    )
+    _set_patent(patent_id, {"questionnaire_status": "Completed"})
+    log_activity(user["uid"], "QuestionnaireSubmitted", "PatentApplication", patent_id)
+    return _questionnaire_payload(get_doc("questionnaires", questionnaire["id"]))
+
+
+@router.get("/patents/{patent_id}/questionnaire/versions")
 def questionnaire_versions(patent_id: str, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user); return [x for x in list_docs('questionnaire_versions') if x.get('patent_id') == patent_id]
-@router.post('/patents/{patent_id}/draft/generate')
-def generate_draft(patent_id: str, body: dict | None = None, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user)
-    section = (body or {}).get('section_type', 'summary')
-    content = f"Draft placeholder for {section}. Review all facts and legal wording with a qualified patent professional."
-    if settings.ai_provider.lower() == 'gemini' and settings.gemini_api_key:
+    require_patent(patent_id, user)
+    versions = query_docs(
+        "questionnaire_versions",
+        filters=[("patent_application_id", "==", patent_id)],
+    )
+    versions = sort_docs(versions, "version_number", reverse=True)
+    return [questionnaire_version_out(doc) for doc in versions]
+
+
+# ---------------------------------------------------------------------------
+# AI drafts
+# ---------------------------------------------------------------------------
+
+
+def _draft_outputs(patent_id: str) -> list[dict]:
+    return query_docs("drafts", filters=[("patent_application_id", "==", patent_id)])
+
+
+@router.get("/patents/{patent_id}/draft")
+def get_draft(patent_id: str, user: dict = Depends(active_user)):
+    patent = require_patent(patent_id, user)
+    if not can_review_draft(patent, user):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Only the assigned Patent Agent or an Admin can open the drafting workspace.",
+        )
+    ensure_permission(user, "DRAFTS_VIEW")
+    outputs = _draft_outputs(patent_id)
+    slots = []
+    for section in drafting.SECTION_TYPES:
+        section_outputs = [
+            doc for doc in outputs if doc.get("section_type") == section
+        ]
+        latest = max(
+            section_outputs,
+            key=lambda doc: int(doc.get("version_number") or 0),
+            default=None,
+        )
+        slots.append(
+            {
+                "section_type": section,
+                "latest": ai_output_out(latest) if latest else None,
+            }
+        )
+    return slots
+
+
+@router.post("/patents/{patent_id}/draft/generate")
+def generate_draft(
+    patent_id: str, payload: dict | None = None, user: dict = Depends(active_user)
+):
+    patent = require_patent(patent_id, user)
+    if not (can_review_draft(patent, user)):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Only the assigned Patent Agent or an Admin can generate drafts.",
+        )
+    ensure_permission(user, "DRAFTS_GENERATE")
+    if patent.get("application_status") != "Under Review":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            'Draft generation requires the application to be "Under Review".',
+        )
+    questionnaire = _questionnaire(patent_id)
+    if questionnaire.get("questionnaire_status") != "Completed":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Submit the questionnaire before generating a draft.",
+        )
+    payload = payload or {}
+    requested = payload.get("section_types") or list(drafting.SECTION_TYPES)
+    unknown = [section for section in requested if section not in drafting.SECTION_TYPES]
+    if unknown:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Unknown section type(s): {', '.join(unknown)}.",
+        )
+
+    versions = query_docs(
+        "questionnaire_versions",
+        filters=[("patent_application_id", "==", patent_id)],
+    )
+    latest_version = max(
+        versions, key=lambda doc: int(doc.get("version_number") or 0), default=None
+    )
+    questionnaire_version_id = (
+        latest_version["id"] if latest_version else questionnaire["id"]
+    )
+
+    existing = _draft_outputs(patent_id)
+    created = []
+    for section in requested:
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=settings.gemini_api_key)
-            content = genai.GenerativeModel(settings.gemini_model).generate_content((body or {}).get('prompt', f'Draft a preliminary patent {section}.')).text
-        except Exception as exc: raise HTTPException(502, f'AI provider request failed: {exc}') from exc
-    doc = _create('draft_sections', {'patent_id': patent_id, 'section_type': section, 'content': content, 'generated_by': user['uid'], 'provider': settings.ai_provider}, user)
-    return {'patent_id': patent_id, 'section_type': section, 'content': content, 'version': doc['id'], 'warning': 'AI output is a draft, not legal advice.'}
-@router.get('/patents/{patent_id}/draft')
-def list_drafts(patent_id: str, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user); return [x for x in list_docs('draft_sections') if x.get('patent_id') == patent_id]
-@router.get('/patents/{patent_id}/draft/{section_type}/versions')
-def draft_versions(patent_id: str, section_type: str, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user); return [x for x in list_docs('draft_sections') if x.get('patent_id') == patent_id and x.get('section_type') == section_type]
+            text, provider, model = drafting.generate_section(
+                patent, questionnaire, section
+            )
+        except drafting.AIGenerationError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+        version_number = 1 + max(
+            [
+                int(doc.get("version_number") or 0)
+                for doc in existing
+                if doc.get("section_type") == section
+            ]
+            or [0]
+        )
+        created.append(
+            create_doc(
+                "drafts",
+                {
+                    "patent_application_id": patent_id,
+                    "questionnaire_version_id": questionnaire_version_id,
+                    "section_type": section,
+                    "version_number": version_number,
+                    "ai_provider": provider,
+                    "ai_model": model,
+                    "ai_response": text,
+                    "processing_status": "Completed",
+                    "input_tokens": None,
+                    "output_tokens": None,
+                },
+            )
+        )
+    _set_patent(patent_id, {"ai_status": "Completed"})
+    notify_many({str(patent.get("created_by"))}, patent_id, "DraftGenerated")
+    log_activity(user["uid"], "DraftGenerated", "PatentApplication", patent_id)
+    return [ai_output_out(doc) for doc in created]
 
-# Files: validation + private Firebase Storage object, metadata in Firestore
-@router.get('/patents/{patent_id}/files')
+
+@router.get("/patents/{patent_id}/draft/{section_type}/versions")
+def draft_versions(
+    patent_id: str, section_type: str, user: dict = Depends(active_user)
+):
+    patent = require_patent(patent_id, user)
+    if not can_review_draft(patent, user):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Only the assigned Patent Agent or an Admin can view draft history.",
+        )
+    ensure_permission(user, "DRAFTS_VIEW")
+    if section_type not in drafting.SECTION_TYPES:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown section type.")
+    versions = [
+        doc for doc in _draft_outputs(patent_id) if doc.get("section_type") == section_type
+    ]
+    versions = sort_docs(versions, "version_number", reverse=True)
+    return [ai_output_out(doc) for doc in versions]
+
+
+# ---------------------------------------------------------------------------
+# Comments
+# ---------------------------------------------------------------------------
+
+
+@router.get("/patents/{patent_id}/comments")
+def list_comments(patent_id: str, user: dict = Depends(active_user)):
+    require_patent(patent_id, user)
+    users = _users_by_id()
+    comments = query_docs(
+        "comments", filters=[("patent_application_id", "==", patent_id)]
+    )
+    comments = sort_docs(comments, "created_at")
+    return [comment_out(doc, users.get(doc.get("user_id"))) for doc in comments]
+
+
+@router.post("/patents/{patent_id}/comments", status_code=status.HTTP_201_CREATED)
+def create_comment(patent_id: str, payload: dict, user: dict = Depends(active_user)):
+    patent = require_patent(patent_id, user)
+    ensure_permission(user, "COMMENTS_POST")
+    text = (payload.get("comment_text") or "").strip()
+    if not text:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "comment_text is required.")
+    if len(text) > 5000:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Comments are limited to 5,000 characters.",
+        )
+    comment = create_doc(
+        "comments",
+        {
+            "patent_application_id": patent_id,
+            "user_id": user["uid"],
+            "comment_text": text,
+        },
+    )
+    notify_many(
+        patent_participants(patent), patent_id, "CommentAdded", exclude=user["uid"]
+    )
+    log_activity(user["uid"], "CommentAdded", "PatentApplication", patent_id)
+    return comment_out(comment, user)
+
+
+# ---------------------------------------------------------------------------
+# Files
+# ---------------------------------------------------------------------------
+
+
+def _validate_upload(upload: UploadFile, content: bytes) -> str:
+    filename = PurePath(upload.filename or "file").name
+    extension = PurePath(filename).suffix.lower()
+    if extension in settings.blocked_extensions:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"{extension} files are not allowed.",
+        )
+    if not content:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The uploaded file is empty.")
+    if len(content) > settings.max_upload_size_bytes:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"Files are limited to {settings.max_upload_size_bytes // (1024 * 1024)} MB.",
+        )
+    return filename
+
+
+def _storage_guard(operation):
+    try:
+        return operation()
+    except StorageError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+
+
+@router.get("/patents/{patent_id}/files")
 def list_files(patent_id: str, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user); return [x for x in list_docs('files') if x.get('patent_id') == patent_id]
-@router.post('/patents/{patent_id}/files', status_code=201)
-async def upload_file(patent_id: str, file: UploadFile = File(...), user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user)
-    name = PurePath(file.filename or 'upload.bin').name; ext = PurePath(name).suffix.lower()
-    content = await file.read(settings.max_upload_size_bytes + 1)
-    if not content: raise HTTPException(422, 'Uploaded file is empty.')
-    if len(content) > settings.max_upload_size_bytes: raise HTTPException(413, 'File exceeds 10 MB limit.')
-    if ext in settings.blocked_extensions: raise HTTPException(422, f'Files with extension {ext} are not allowed.')
-    key = f'patents/{patent_id}/files/{uuid.uuid4().hex}_{name}'
-    try:
-        blob = bucket().blob(key); blob.upload_from_string(content, content_type=file.content_type or 'application/octet-stream')
-    except FirebaseNotConfigured as exc: raise HTTPException(503, str(exc)) from exc
-    return _create('files', {'patent_id': patent_id, 'original_file_name': name, 'storage_key': key, 'content_type': file.content_type, 'size_bytes': len(content), 'uploaded_by': user['uid']}, user)
-@router.get('/patents/{patent_id}/files/{file_id}/download')
+    require_patent(patent_id, user)
+    users = _users_by_id()
+    files = query_docs("files", filters=[("patent_application_id", "==", patent_id)])
+    files = sort_docs(files, "created_at", reverse=True)
+    return [file_out(doc, users.get(doc.get("uploaded_by"))) for doc in files]
+
+
+@router.post("/patents/{patent_id}/files", status_code=status.HTTP_201_CREATED)
+async def upload_file(
+    patent_id: str,
+    upload: UploadFile = File(...),
+    user: dict = Depends(active_user),
+):
+    patent = require_patent(patent_id, user)
+    ensure_permission(user, "FILES_UPLOAD")
+    content = await upload.read()
+    filename = _validate_upload(upload, content)
+    extension = PurePath(filename).suffix.lower()
+    path = f"patents/{patent_id}/files/{uuid.uuid4().hex}{extension}"
+    _storage_guard(
+        lambda: put_bytes(path, content, upload.content_type or "application/octet-stream")
+    )
+    record = create_doc(
+        "files",
+        {
+            "patent_application_id": patent_id,
+            "uploaded_by": user["uid"],
+            "original_file_name": filename,
+            "stored_path": path,
+            "mime_type": upload.content_type or "application/octet-stream",
+            "file_size_bytes": len(content),
+        },
+    )
+    notify_many(
+        patent_participants(patent), patent_id, "FileUploaded", exclude=user["uid"]
+    )
+    log_activity(user["uid"], "FileUploaded", "PatentApplication", patent_id)
+    return file_out(record, user)
+
+
+@router.get("/patents/{patent_id}/files/{file_id}/download")
 def download_file(patent_id: str, file_id: str, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user); meta = get_doc('files', file_id)
-    if meta.get('patent_id') != patent_id: raise HTTPException(404, 'File not found.')
-    try:
-        blob = bucket().blob(meta['storage_key']); url = blob.generate_signed_url(version='v4', expiration=300, method='GET')
-    except Exception as exc: raise HTTPException(503, f'Unable to create a download link: {exc}') from exc
-    return {'download_url': url, 'expires_in_seconds': 300, 'file_name': meta.get('original_file_name')}
-@router.delete('/patents/{patent_id}/files/{file_id}', status_code=204)
+    require_patent(patent_id, user)
+    record = get_doc("files", file_id)
+    if record.get("patent_application_id") != patent_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
+    content = _storage_guard(lambda: read_bytes(record.get("stored_path") or ""))
+    return Response(
+        content=content,
+        media_type=record.get("mime_type") or "application/octet-stream",
+        headers=_content_disposition(record.get("original_file_name") or "download"),
+    )
+
+
+@router.delete("/patents/{patent_id}/files/{file_id}")
 def delete_file(patent_id: str, file_id: str, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user); meta = get_doc('files', file_id)
-    if meta.get('patent_id') != patent_id: raise HTTPException(404, 'File not found.')
-    if not is_admin(user) and meta.get('uploaded_by') != user['uid']: raise HTTPException(403, 'Only the uploader or an administrator can delete this file.')
-    try: bucket().blob(meta['storage_key']).delete()
-    except Exception: pass
-    delete_doc('files', file_id)
+    require_patent(patent_id, user)
+    record = get_doc("files", file_id)
+    if record.get("patent_application_id") != patent_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found.")
+    if not (
+        is_admin(user)
+        or record.get("uploaded_by") == user["uid"]
+        or has_permission(user, "FILES_DELETE")
+    ):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "You cannot delete this file."
+        )
+    _storage_guard(lambda: delete_path(record.get("stored_path") or ""))
+    delete_doc("files", file_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-# Notifications, calendar, templates, reports, role administration
-@router.get('/notifications')
-def notifications(user: dict = Depends(active_user)):
-    return [x for x in list_docs('notifications') if x.get('recipient_uid') == user['uid']]
-@router.get('/notifications/unread-count')
-def unread_count(user: dict = Depends(active_user)):
-    return {'count': sum(1 for x in list_docs('notifications') if x.get('recipient_uid') == user['uid'] and not x.get('read'))}
-@router.patch('/notifications/{notification_id}/read')
+
+# ---------------------------------------------------------------------------
+# Calendar
+# ---------------------------------------------------------------------------
+
+
+def _can_manage_calendar(patent: dict, user: dict) -> bool:
+    return is_admin(user) or patent.get("assigned_patent_agent_id") == user["uid"]
+
+
+@router.get("/patents/{patent_id}/calendar-events")
+def list_patent_events(patent_id: str, user: dict = Depends(active_user)):
+    require_patent(patent_id, user)
+    events = query_docs(
+        "calendar_events", filters=[("patent_application_id", "==", patent_id)]
+    )
+    events = sort_docs(events, "event_date")
+    return [calendar_event_out(doc) for doc in events]
+
+
+@router.post(
+    "/patents/{patent_id}/calendar-events", status_code=status.HTTP_201_CREATED
+)
+def create_calendar_event(
+    patent_id: str, payload: dict, user: dict = Depends(active_user)
+):
+    patent = require_patent(patent_id, user)
+    if not _can_manage_calendar(patent, user):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Only the assigned Patent Agent or an Admin can add calendar events.",
+        )
+    ensure_permission(user, "CALENDAR_MANAGE")
+    event_type = payload.get("event_type")
+    if event_type not in CALENDAR_EVENT_TYPES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown event_type.")
+    event_date = payload.get("event_date")
+    if not event_date:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "event_date is required.")
+    event = create_doc(
+        "calendar_events",
+        {
+            "patent_application_id": patent_id,
+            "event_type": event_type,
+            "event_date": _parse_iso(event_date),
+            "created_by": user["uid"],
+        },
+    )
+    return calendar_event_out(event)
+
+
+@router.delete("/patents/{patent_id}/calendar-events/{event_id}")
+def delete_calendar_event(
+    patent_id: str, event_id: str, user: dict = Depends(active_user)
+):
+    patent = require_patent(patent_id, user)
+    if not _can_manage_calendar(patent, user):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Only the assigned Patent Agent or an Admin can delete calendar events.",
+        )
+    event = get_doc("calendar_events", event_id)
+    if event.get("patent_application_id") != patent_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Calendar event not found.")
+    delete_doc("calendar_events", event_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/calendar/events")
+def calendar(user: dict = Depends(active_user)):
+    ensure_permission(user, "CALENDAR_VIEW")
+    patents = {doc["id"]: doc for doc in visible_patents(user)}
+    events = [
+        doc
+        for doc in list_docs("calendar_events")
+        if doc.get("patent_application_id") in patents
+    ]
+    events = sort_docs(events, "event_date")
+    return [
+        calendar_event_out(
+            doc,
+            (patents.get(doc.get("patent_application_id")) or {}).get(
+                "invention_title"
+            ),
+        )
+        for doc in events
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Document generation
+# ---------------------------------------------------------------------------
+
+
+def _sections_for(patent_id: str) -> dict[str, str]:
+    outputs = _draft_outputs(patent_id)
+    sections: dict[str, str] = {}
+    for section in drafting.SECTION_TYPES:
+        candidates = [
+            doc
+            for doc in outputs
+            if doc.get("section_type") == section
+            and doc.get("processing_status") == "Completed"
+            and doc.get("ai_response")
+        ]
+        latest = max(
+            candidates,
+            key=lambda doc: int(doc.get("version_number") or 0),
+            default=None,
+        )
+        if latest:
+            sections[section] = latest["ai_response"]
+    return sections
+
+
+def _active_template(document_type: str) -> dict | None:
+    templates = query_docs(
+        "templates", filters=[("document_type", "==", document_type)]
+    )
+    active = [doc for doc in templates if doc.get("is_active")]
+    return active[0] if active else None
+
+
+def _run_generation(
+    patent: dict,
+    output_format: str,
+    user: dict,
+    retried_from_job_id: str | None = None,
+) -> dict:
+    patent_id = patent["id"]
+    job = create_doc(
+        "document_jobs",
+        {
+            "patent_application_id": patent_id,
+            "status": "Processing",
+            "triggered_by": user["uid"],
+            "retried_from_job_id": retried_from_job_id,
+            "error_message": None,
+            "started_at": _now(),
+            "completed_at": None,
+            "output_format": output_format,
+        },
+    )
+    try:
+        sections = _sections_for(patent_id)
+        missing = [
+            section
+            for section in drafting.SECTION_TYPES
+            if section not in sections
+        ]
+        if missing:
+            raise docgen.DocumentGenerationError(
+                "Generate every AI draft section first. Missing: "
+                + ", ".join(missing)
+                + "."
+            )
+        template_doc = _active_template(DOCUMENT_TYPE)
+        template_bytes = None
+        if template_doc:
+            template_bytes = _storage_guard(
+                lambda: read_bytes(template_doc.get("file_path") or "")
+            )
+        docx = docgen.render_docx(patent, sections, template_bytes)
+        if output_format == "PDF":
+            content = docgen.docx_to_pdf(docx)
+            extension = "pdf"
+        else:
+            content = docx
+            extension = "docx"
+
+        documents = query_docs(
+            "documents", filters=[("patent_application_id", "==", patent_id)]
+        )
+        document = next(
+            (
+                doc
+                for doc in documents
+                if doc.get("output_format") == output_format
+                and doc.get("document_type") == DOCUMENT_TYPE
+            ),
+            None,
+        )
+        versions = query_docs(
+            "document_versions", filters=[("patent_application_id", "==", patent_id)]
+        ) if document else []
+        version_number = 1 + max(
+            [
+                int(doc.get("version_number") or 0)
+                for doc in versions
+                if doc.get("document_id") == (document or {}).get("id")
+            ]
+            or [0]
+        )
+        path = (
+            f"documents/{patent_id}/{output_format.lower()}/v{version_number}.{extension}"
+        )
+        _storage_guard(
+            lambda: put_bytes(
+                path,
+                content,
+                "application/pdf"
+                if extension == "pdf"
+                else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        )
+        stamp = _now()
+        if document is None:
+            document = create_doc(
+                "documents",
+                {
+                    "patent_application_id": patent_id,
+                    "template_id": (template_doc or {}).get("id"),
+                    "document_type": DOCUMENT_TYPE,
+                    "output_format": output_format,
+                    "watermark_status": "DRAFT",
+                    "generated_by": user["uid"],
+                    "generated_at": stamp,
+                    "stored_path": path,
+                },
+            )
+        else:
+            document = patch_doc(
+                "documents",
+                document["id"],
+                {
+                    "template_id": (template_doc or {}).get("id"),
+                    "generated_by": user["uid"],
+                    "generated_at": stamp,
+                    "stored_path": path,
+                },
+            )
+        create_doc(
+            "document_versions",
+            {
+                "document_id": document["id"],
+                "patent_application_id": patent_id,
+                "version_number": version_number,
+                "change_summary": f"Generated {output_format}",
+                "generated_by": user["uid"],
+                "generated_at": stamp,
+                "storage_path": path,
+            },
+        )
+        current_status = patent.get("application_status")
+        next_status = (
+            "Draft Generated"
+            if current_status in {"Under Review", "Changes Requested"}
+            else current_status
+        )
+        _set_patent(
+            patent_id,
+            {"document_status": "Generated", "application_status": next_status},
+        )
+        notify_many({str(patent.get("created_by"))}, patent_id, "DraftGenerated")
+        log_activity(user["uid"], "DocumentGenerated", "PatentApplication", patent_id)
+        return patch_doc(
+            "document_jobs",
+            job["id"],
+            {
+                "status": "Completed",
+                "error_message": None,
+                "completed_at": _now(),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - recorded on the job for the UI
+        message = str(exc) or exc.__class__.__name__
+        return patch_doc(
+            "document_jobs",
+            job["id"],
+            {
+                "status": "Failed",
+                "error_message": message,
+                "completed_at": _now(),
+            },
+        )
+
+
+@router.get("/patents/{patent_id}/documents")
+def list_documents(patent_id: str, user: dict = Depends(active_user)):
+    require_patent(patent_id, user)
+    ensure_permission(user, "DOCUMENTS_VIEW")
+    documents = query_docs(
+        "documents", filters=[("patent_application_id", "==", patent_id)]
+    )
+    documents = sort_docs(documents, "generated_at", reverse=True)
+    return [document_out(doc) for doc in documents]
+
+
+@router.get("/patents/{patent_id}/documents/jobs")
+def list_document_jobs(patent_id: str, user: dict = Depends(active_user)):
+    require_patent(patent_id, user)
+    ensure_permission(user, "DOCUMENTS_VIEW")
+    jobs = query_docs(
+        "document_jobs", filters=[("patent_application_id", "==", patent_id)]
+    )
+    jobs = sort_docs(jobs, "created_at", reverse=True)
+    return [document_job_out(doc) for doc in jobs]
+
+
+@router.post("/patents/{patent_id}/documents/generate")
+def generate_document(
+    patent_id: str, payload: dict, user: dict = Depends(active_user)
+):
+    patent = require_patent(patent_id, user)
+    ensure_permission(user, "DOCUMENTS_GENERATE")
+    if not (is_admin(user) or patent.get("assigned_patent_agent_id") == user["uid"]):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Only the assigned Patent Agent or an Admin can generate documents.",
+        )
+    if patent.get("application_status") not in {"Under Review", "Draft Generated"}:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Document generation requires the application to be Under Review "
+            "or Draft Generated.",
+        )
+    output_format = str(payload.get("output_format") or "DOCX").upper()
+    if output_format not in {"PDF", "DOCX"}:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "output_format must be PDF or DOCX."
+        )
+    job = _run_generation(patent, output_format, user)
+    return document_job_out(job)
+
+
+@router.post("/patents/{patent_id}/documents/jobs/{job_id}/retry")
+def retry_document_job(
+    patent_id: str, job_id: str, user: dict = Depends(active_user)
+):
+    patent = require_patent(patent_id, user)
+    ensure_permission(user, "DOCUMENTS_GENERATE")
+    if not (is_admin(user) or patent.get("assigned_patent_agent_id") == user["uid"]):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Only the assigned Patent Agent or an Admin can retry generation.",
+        )
+    job = get_doc("document_jobs", job_id)
+    if job.get("patent_application_id") != patent_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Generation job not found.")
+    if job.get("status") != "Failed":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Only failed jobs can be retried."
+        )
+    output_format = str(job.get("output_format") or "DOCX").upper()
+    retried = _run_generation(patent, output_format, user, retried_from_job_id=job_id)
+    return document_job_out(retried)
+
+
+@router.get("/patents/{patent_id}/documents/{document_id}/versions")
+def document_versions(
+    patent_id: str, document_id: str, user: dict = Depends(active_user)
+):
+    require_patent(patent_id, user)
+    ensure_permission(user, "DOCUMENTS_VIEW")
+    document = get_doc("documents", document_id)
+    if document.get("patent_application_id") != patent_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found.")
+    versions = query_docs(
+        "document_versions", filters=[("document_id", "==", document_id)]
+    )
+    versions = sort_docs(versions, "version_number", reverse=True)
+    return [document_version_out(doc) for doc in versions]
+
+
+@router.get("/patents/{patent_id}/documents/{document_id}/download")
+def download_document(
+    patent_id: str, document_id: str, user: dict = Depends(active_user)
+):
+    require_patent(patent_id, user)
+    ensure_permission(user, "DOCUMENTS_VIEW")
+    document = get_doc("documents", document_id)
+    if document.get("patent_application_id") != patent_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found.")
+    path = document.get("stored_path")
+    if not path:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No generated file is available.")
+    content = _storage_guard(lambda: read_bytes(path))
+    extension = "pdf" if document.get("output_format") == "PDF" else "docx"
+    return Response(
+        content=content,
+        media_type="application/pdf"
+        if extension == "pdf"
+        else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers=_content_disposition(f"patent-document.{extension}"),
+    )
+
+
+@router.get("/patents/{patent_id}/documents/versions/{version_id}/download")
+def download_document_version(
+    patent_id: str, version_id: str, user: dict = Depends(active_user)
+):
+    require_patent(patent_id, user)
+    ensure_permission(user, "DOCUMENTS_VIEW")
+    version = get_doc("document_versions", version_id)
+    if version.get("patent_application_id") != patent_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document version not found.")
+    document = get_doc("documents", version.get("document_id"))
+    if document.get("patent_application_id") != patent_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document version not found.")
+    extension = "pdf" if document.get("output_format") == "PDF" else "docx"
+    path = version.get("storage_path")
+    if not path:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No generated file is available.")
+    content = _storage_guard(lambda: read_bytes(path))
+    return Response(
+        content=content,
+        media_type="application/pdf"
+        if extension == "pdf"
+        else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers=_content_disposition(
+            f"patent-document-v{version.get('version_number')}.{extension}"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Templates
+# ---------------------------------------------------------------------------
+
+
+@router.get("/templates/document-types")
+def template_document_types(user: dict = Depends(active_user)):
+    ensure_permission(user, "TEMPLATES_VIEW")
+    return list(docgen.DOCUMENT_TYPES)
+
+
+@router.get("/templates")
+def list_templates(
+    document_type: str | None = Query(default=None), user: dict = Depends(active_user)
+):
+    ensure_permission(user, "TEMPLATES_VIEW")
+    templates = list_docs("templates")
+    if document_type:
+        templates = [
+            doc for doc in templates if doc.get("document_type") == document_type
+        ]
+    templates = sort_docs(templates, "version_number", reverse=True)
+    users = _users_by_id()
+    return [
+        template_out(doc, users.get(doc.get("edited_by"))) for doc in templates
+    ]
+
+
+@router.post("/templates", status_code=status.HTTP_201_CREATED)
+async def upload_template(
+    document_type: str = Query(...),
+    activate: bool = Query(default=True),
+    upload: UploadFile = File(...),
+    user: dict = Depends(active_user),
+):
+    ensure_permission(user, "TEMPLATES_MANAGE")
+    if document_type not in docgen.DOCUMENT_TYPES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown document_type.")
+    content = await upload.read()
+    filename = _validate_upload(upload, content)
+    if PurePath(filename).suffix.lower() != ".docx":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Only .docx template files are accepted."
+        )
+    unknown, unused, parse_error = docgen.inspect_template(content)
+    existing = [
+        doc
+        for doc in list_docs("templates")
+        if doc.get("document_type") == document_type
+    ]
+    version_number = 1 + max(
+        [int(doc.get("version_number") or 0) for doc in existing] or [0]
+    )
+    path = f"templates/{re.sub(r'[^a-z0-9]+', '-', document_type.lower())}/v{version_number}.docx"
+    _storage_guard(
+        lambda: put_bytes(
+            path,
+            content,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    )
+    if activate:
+        for doc in existing:
+            if doc.get("is_active"):
+                patch_doc("templates", doc["id"], {"is_active": False})
+    record = create_doc(
+        "templates",
+        {
+            "document_type": document_type,
+            "version_number": version_number,
+            "file_path": path,
+            "original_file_name": filename,
+            "is_active": activate,
+            "edited_by": user["uid"],
+            "unknown_placeholders": unknown,
+            "unused_known_placeholders": unused,
+            "template_parse_error": parse_error,
+        },
+    )
+    log_activity(user["uid"], "TemplateUploaded", "Template", record["id"])
+    return template_out(record, user)
+
+
+@router.post("/templates/{template_id}/activate")
+def activate_template(template_id: str, user: dict = Depends(active_user)):
+    ensure_permission(user, "TEMPLATES_MANAGE")
+    template = get_doc("templates", template_id)
+    for doc in list_docs("templates"):
+        if doc.get("document_type") == template.get("document_type") and doc.get(
+            "is_active"
+        ):
+            patch_doc("templates", doc["id"], {"is_active": False})
+    updated = patch_doc("templates", template_id, {"is_active": True})
+    return template_out(updated, user)
+
+
+@router.delete("/templates/{template_id}")
+def delete_template(template_id: str, user: dict = Depends(active_user)):
+    ensure_permission(user, "TEMPLATES_MANAGE")
+    template = get_doc("templates", template_id)
+    _storage_guard(lambda: delete_path(template.get("file_path") or ""))
+    delete_doc("templates", template_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+
+
+@router.get("/notifications")
+def list_notifications(user: dict = Depends(active_user)):
+    ensure_permission(user, "NOTIFICATIONS_VIEW")
+    notifications = query_docs(
+        "notifications", filters=[("user_id", "==", user["uid"])]
+    )
+    notifications = sort_docs(notifications, "created_at", reverse=True)[:100]
+    titles = _title_map()
+    return [
+        notification_out(doc, titles.get(doc.get("patent_application_id")))
+        for doc in notifications
+    ]
+
+
+@router.get("/notifications/unread-count")
+def unread_notification_count(user: dict = Depends(active_user)):
+    ensure_permission(user, "NOTIFICATIONS_VIEW")
+    count = len(
+        [
+            doc
+            for doc in query_docs(
+                "notifications", filters=[("user_id", "==", user["uid"])]
+            )
+            if not doc.get("is_read")
+        ]
+    )
+    return {"unread_count": count}
+
+
+@router.patch("/notifications/{notification_id}/read")
 def mark_notification_read(notification_id: str, user: dict = Depends(active_user)):
-    item = get_doc('notifications', notification_id)
-    if item.get('recipient_uid') != user['uid'] and not is_admin(user): raise HTTPException(403, 'Not your notification.')
-    return patch_doc('notifications', notification_id, {'read': True, 'read_at': now_iso()})
-@router.post('/notifications/read-all')
-def read_all(user: dict = Depends(active_user)):
-    count = 0
-    for item in list_docs('notifications'):
-        if item.get('recipient_uid') == user['uid'] and not item.get('read'):
-            patch_doc('notifications', item['id'], {'read': True, 'read_at': now_iso()}); count += 1
-    return {'updated': count}
-@router.get('/calendar/events')
-def my_calendar(user: dict = Depends(active_user)):
-    return [x for x in list_docs('calendar_events') if x.get('created_by') == user['uid'] or x.get('owner_uid') == user['uid']]
-@router.get('/templates')
-def list_templates(_: dict = Depends(active_user)):
-    return list_docs('templates')
-@router.get('/templates/document-types')
-def template_types(_: dict = Depends(active_user)):
-    return sorted(set(x.get('document_type', 'unknown') for x in list_docs('templates')))
-@router.post('/templates', status_code=201)
-async def upload_template(file: UploadFile = File(...), document_type: str = 'PATENT_APPLICATION', user: dict = Depends(require_roles('ADMIN', 'SUPER_ADMIN'))):
-    content = await file.read(settings.max_upload_size_bytes + 1)
-    if not content or len(content) > settings.max_upload_size_bytes: raise HTTPException(413, 'Template must be non-empty and no larger than 10 MB.')
-    key = f'templates/{document_type}/{uuid.uuid4().hex}_{PurePath(file.filename or "template.docx").name}'
-    blob = bucket().blob(key); blob.upload_from_string(content, content_type=file.content_type or 'application/octet-stream')
-    return _create('templates', {'document_type': document_type, 'file_name': file.filename, 'storage_key': key, 'active': True, 'uploaded_by': user['uid']}, user)
-@router.post('/templates/{template_id}/activate')
-def activate_template(template_id: str, user: dict = Depends(require_roles('ADMIN', 'SUPER_ADMIN'))):
-    target = get_doc('templates', template_id)
-    for t in list_docs('templates'):
-        if t.get('document_type') == target.get('document_type') and t['id'] != template_id and t.get('active'):
-            patch_doc('templates', t['id'], {'active': False})
-    return patch_doc('templates', template_id, {'active': True, 'activated_by': user['uid']})
-@router.delete('/templates/{template_id}', status_code=204)
-def delete_template(template_id: str, _: dict = Depends(require_roles('ADMIN', 'SUPER_ADMIN'))):
-    item = get_doc('templates', template_id)
-    try: bucket().blob(item['storage_key']).delete()
-    except Exception: pass
-    delete_doc('templates', template_id)
-@router.get('/reports/dashboard')
+    ensure_permission(user, "NOTIFICATIONS_VIEW")
+    notification = get_doc("notifications", notification_id)
+    if notification.get("user_id") != user["uid"]:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Notification not found.")
+    patch_doc("notifications", notification_id, {"is_read": True})
+    return {"id": notification_id, "is_read": True}
+
+
+@router.post("/notifications/read-all")
+def mark_all_notifications_read(user: dict = Depends(active_user)):
+    ensure_permission(user, "NOTIFICATIONS_VIEW")
+    for doc in query_docs(
+        "notifications", filters=[("user_id", "==", user["uid"])]
+    ):
+        if not doc.get("is_read"):
+            patch_doc("notifications", doc["id"], {"is_read": True})
+    return {"unread_count": 0}
+
+
+# ---------------------------------------------------------------------------
+# Reports & dashboards
+# ---------------------------------------------------------------------------
+
+
+def _status_counts(patents: list[dict]) -> list[dict]:
+    counts: dict[str, int] = {}
+    for patent in patents:
+        label = patent.get("application_status") or "Draft"
+        counts[label] = counts.get(label, 0) + 1
+    return [
+        {"status": status_name, "count": counts[status_name]}
+        for status_name in sorted(counts)
+    ]
+
+
+@router.get("/reports/dashboard")
 def dashboard(user: dict = Depends(active_user)):
-    patents = _read('patents', user)
-    return {'total_patents': len(patents), 'draft': sum(x.get('workflow_status', x.get('status')) == 'draft' for x in patents), 'submitted': sum(x.get('workflow_status', x.get('status')) == 'submitted' for x in patents), 'under_review': sum(x.get('workflow_status') == 'under_review' for x in patents)}
-@router.get('/reports')
-def report_types(_: dict = Depends(active_user)):
-    return [{'report_type': 'patents', 'description': 'Patent application overview'}, {'report_type': 'assignments', 'description': 'Patent agent assignment overview'}]
-@router.get('/reports/{report_type}')
-def report(report_type: str, user: dict = Depends(active_user)):
-    if report_type == 'patents': return _read('patents', user)
-    if report_type == 'assignments': return [x for x in _read('patents', user) if x.get('assigned_agent_uid')]
-    raise HTTPException(404, 'Unknown report type.')
-@router.get('/rbac/users')
-def all_users(_: dict = Depends(require_roles('ADMIN', 'SUPER_ADMIN'))):
-    return list_docs('users')
-@router.post('/rbac/users/{user_id}/roles')
-def assign_role(user_id: str, body: dict, admin: dict = Depends(require_roles('SUPER_ADMIN'))):
-    role = str(body.get('role_code', '')).upper()
-    if role not in {'SUPER_ADMIN', 'ADMIN', 'PATENT_AGENT', 'INNOVATOR'}: raise HTTPException(422, 'Unknown role code.')
-    ref = db().collection('users').document(user_id)
-    if not ref.get().exists: raise HTTPException(404, 'User not found.')
-    user = ref.get().to_dict() or {}; roles = list(set(user.get('role_codes', []) + [role]))
-    ref.set({'role_codes': roles, 'role_updated_by': admin['uid'], 'updated_at': now_iso()}, merge=True)
-    return {'uid': user_id, 'role_codes': roles}
-@router.delete('/rbac/users/{user_id}/roles/{role_code}')
-def revoke_role(user_id: str, role_code: str, admin: dict = Depends(require_roles('SUPER_ADMIN'))):
-    ref = db().collection('users').document(user_id); snap = ref.get()
-    if not snap.exists: raise HTTPException(404, 'User not found.')
-    roles = [r for r in (snap.to_dict() or {}).get('role_codes', []) if r != role_code.upper()]
-    if not roles: roles = ['INNOVATOR']
-    ref.set({'role_codes': roles, 'role_updated_by': admin['uid'], 'updated_at': now_iso()}, merge=True)
-    return {'uid': user_id, 'role_codes': roles}
+    patents = visible_patents(user)
+    roles = set(user.get("role_codes") or [])
+    if {"ADMIN", "SUPER_ADMIN"} & roles:
+        action_statuses = {"Submitted", "Awaiting Patent Agent Acceptance"}
+        label = "Applications awaiting assignment"
+        action_count = len(
+            [doc for doc in patents if doc.get("application_status") in action_statuses]
+        )
+    elif "PATENT_AGENT" in roles:
+        label = "Assignments awaiting your decision"
+        action_count = len(
+            [
+                doc
+                for doc in patents
+                if doc.get("assigned_patent_agent_id") == user["uid"]
+                and doc.get("application_status") == "Awaiting Patent Agent Acceptance"
+            ]
+        )
+    else:
+        label = "Applications still in Draft"
+        action_count = len(
+            [
+                doc
+                for doc in patents
+                if doc.get("application_status") == "Draft"
+                and doc.get("created_by") == user["uid"]
+            ]
+        )
+    unread = len(
+        [
+            doc
+            for doc in query_docs(
+                "notifications", filters=[("user_id", "==", user["uid"])]
+            )
+            if not doc.get("is_read")
+        ]
+    )
+    recent_activity = None
+    if {"ADMIN", "SUPER_ADMIN"} & roles:
+        activity = sort_docs(list_docs("activity"), "created_at", reverse=True)[:10]
+        recent_activity = [
+            {
+                "id": doc["id"],
+                "user_id": doc.get("user_id"),
+                "event_type": doc.get("event_type"),
+                "entity_type": doc.get("entity_type"),
+                "entity_id": doc.get("entity_id"),
+                "created_at": doc.get("created_at"),
+            }
+            for doc in activity
+        ]
+    return {
+        "total_visible_patents": len(patents),
+        "status_counts": _status_counts(patents),
+        "action_required_count": action_count,
+        "action_required_label": label,
+        "unread_notifications": unread,
+        "upcoming_events_count": len(upcoming_events(patents)),
+        "recent_activity": recent_activity,
+    }
 
-# Editable subresources (applicants/inventors/comments are deliberately restricted).
-@router.patch('/patents/{patent_id}/{resource}/{item_id}')
-def patch_patent_subresource(patent_id: str, resource: str, item_id: str, body: dict, user: dict = Depends(active_user)):
-    mapping = {'applicants': 'applicants', 'inventors': 'inventors', 'comments': 'comments', 'calendar-events': 'calendar_events'}
-    if resource not in mapping: raise HTTPException(404, 'Unsupported patent subresource.')
-    _owned_get('patents', patent_id, user)
-    item = get_doc(mapping[resource], item_id)
-    if item.get('patent_id') != patent_id: raise HTTPException(404, 'Subresource not found.')
-    if resource == 'comments' and not is_admin(user) and item.get('created_by') != user['uid'] and item.get('author_uid') != user['uid']:
-        raise HTTPException(403, 'Only the comment author or an administrator can edit this comment.')
-    for protected in ('id', 'patent_id', 'created_by', 'owner_uid', 'author_uid', 'uploaded_by'):
-        body.pop(protected, None)
-    return patch_doc(mapping[resource], item_id, body)
 
-@router.delete('/patents/{patent_id}/{resource}/{item_id}', status_code=204)
-def delete_patent_subresource(patent_id: str, resource: str, item_id: str, user: dict = Depends(active_user)):
-    mapping = {'applicants': 'applicants', 'inventors': 'inventors', 'comments': 'comments', 'calendar-events': 'calendar_events'}
-    if resource not in mapping: raise HTTPException(404, 'Unsupported patent subresource.')
-    _owned_get('patents', patent_id, user)
-    item = get_doc(mapping[resource], item_id)
-    if item.get('patent_id') != patent_id: raise HTTPException(404, 'Subresource not found.')
-    if not is_admin(user) and item.get('created_by') != user['uid'] and item.get('author_uid') != user['uid']:
-        raise HTTPException(403, 'Only the creator or an administrator can delete this item.')
-    delete_doc(mapping[resource], item_id)
+def _report_rows(report_type: str, user: dict) -> list[dict]:
+    patents = {
+        doc["id"]: doc for doc in visible_patents(user)
+    }
+    users = _users_by_id()
+    if report_type == "patent_applications":
+        rows = []
+        for patent in patents.values():
+            agent = users.get(patent.get("assigned_patent_agent_id")) or {}
+            rows.append(
+                {
+                    "id": patent["id"],
+                    "invention_title": patent.get("invention_title"),
+                    "application_status": patent.get("application_status"),
+                    "assigned_patent_agent": agent.get("full_name"),
+                    "created_at": patent.get("created_at"),
+                }
+            )
+        return sort_docs(rows, "created_at", reverse=True)
+    if report_type == "documents":
+        rows = []
+        for document in list_docs("documents"):
+            patent = patents.get(document.get("patent_application_id"))
+            if not patent:
+                continue
+            rows.append(
+                {
+                    "id": document["id"],
+                    "invention_title": patent.get("invention_title"),
+                    "document_type": document.get("document_type"),
+                    "output_format": document.get("output_format"),
+                    "generated_at": document.get("generated_at"),
+                }
+            )
+        return sort_docs(rows, "generated_at", reverse=True)
+    if report_type == "calendar_events":
+        rows = []
+        for event in list_docs("calendar_events"):
+            patent = patents.get(event.get("patent_application_id"))
+            if not patent:
+                continue
+            rows.append(
+                {
+                    "id": event["id"],
+                    "invention_title": patent.get("invention_title"),
+                    "event_type": event.get("event_type"),
+                    "event_date": event.get("event_date"),
+                }
+            )
+        return sort_docs(rows, "event_date")
+    if report_type == "users":
+        if not is_admin(user):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "Admin access required for the users report."
+            )
+        return [
+            {
+                "id": doc["id"],
+                "full_name": doc.get("full_name"),
+                "email": doc.get("email"),
+                "account_status": user_out(doc)["account_status"],
+                "roles": ", ".join(doc.get("role_codes") or []),
+                "created_at": doc.get("created_at"),
+            }
+            for doc in sort_docs(list_docs("users"), "created_at", reverse=True)
+        ]
+    raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown report type.")
 
-@router.post('/patents/{patent_id}/applicants/reorder')
-def reorder_applicants(patent_id: str, body: dict, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user)
-    ids = body.get('ordered_ids', [])
-    if not isinstance(ids, list): raise HTTPException(422, 'ordered_ids must be a list.')
-    for position, item_id in enumerate(ids):
-        item = get_doc('applicants', str(item_id))
-        if item.get('patent_id') != patent_id: raise HTTPException(400, 'All applicant IDs must belong to this patent.')
-        patch_doc('applicants', str(item_id), {'display_order': position})
-    return sorted([x for x in list_docs('applicants') if x.get('patent_id') == patent_id], key=lambda x: x.get('display_order', 0))
 
-@router.post('/patents/{patent_id}/inventors/reorder')
-def reorder_inventors(patent_id: str, body: dict, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user)
-    ids = body.get('ordered_ids', [])
-    if not isinstance(ids, list): raise HTTPException(422, 'ordered_ids must be a list.')
-    for position, item_id in enumerate(ids):
-        item = get_doc('inventors', str(item_id))
-        if item.get('patent_id') != patent_id: raise HTTPException(400, 'All inventor IDs must belong to this patent.')
-        patch_doc('inventors', str(item_id), {'display_order': position})
-    return sorted([x for x in list_docs('inventors') if x.get('patent_id') == patent_id], key=lambda x: x.get('display_order', 0))
+@router.get("/reports/permissions/matrix")
+def report_permission_matrix(user: dict = Depends(active_user)):
+    if not is_super_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin access required.")
+    return report_matrix()
 
-# Minimal DOCX generation pipeline, stored privately in Firebase Storage.
-@router.get('/patents/{patent_id}/documents/jobs')
-def document_jobs(patent_id: str, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user)
-    return [x for x in list_docs('documents') if x.get('patent_id') == patent_id]
 
-@router.get('/patents/{patent_id}/documents/jobs/{job_id}')
-def document_job(patent_id: str, job_id: str, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user)
-    item = get_doc('documents', job_id)
-    if item.get('patent_id') != patent_id: raise HTTPException(404, 'Document job not found.')
-    return item
-
-@router.post('/patents/{patent_id}/documents/generate', status_code=201)
-def generate_document(patent_id: str, body: dict | None = None, user: dict = Depends(active_user)):
-    patent = _owned_get('patents', patent_id, user)
-    from docx import Document
-    import io
-    document_type = (body or {}).get('document_type', 'PATENT_APPLICATION')
-    doc = Document()
-    doc.add_heading('Patent Application Draft', 0)
-    doc.add_paragraph('CONFIDENTIAL — generated draft; review before use.')
-    doc.add_heading('Basic Information', level=1)
-    for key, value in patent.items():
-        if key not in {'id', 'created_by', 'owner_uid'} and not isinstance(value, (dict, list)):
-            doc.add_paragraph(f'{key.replace("_", " ").title()}: {value}')
-    questionnaire = db().collection('questionnaires').document(patent_id).get()
-    if questionnaire.exists:
-        doc.add_heading('Questionnaire', level=1)
-        for key, value in (questionnaire.to_dict() or {}).get('answers', {}).items():
-            doc.add_paragraph(f'{key}: {value}')
-    buf = io.BytesIO(); doc.save(buf); data = buf.getvalue()
-    key = f'patents/{patent_id}/documents/{uuid.uuid4().hex}.docx'
+@router.post("/reports/permissions/toggle")
+def report_permission_toggle(
+    payload: dict, grant: bool = Query(...), user: dict = Depends(active_user)
+):
+    if not is_super_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin access required.")
     try:
-        blob = bucket().blob(key); blob.upload_from_string(data, content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
-    except FirebaseNotConfigured as exc: raise HTTPException(503, str(exc)) from exc
-    return _create('documents', {'patent_id': patent_id, 'document_type': document_type, 'status': 'completed', 'file_name': f'{document_type.lower()}.docx', 'storage_key': key, 'content_type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'size_bytes': len(data), 'generated_by': user['uid'], 'version': 1}, user)
+        return toggle_report_permission(
+            int(payload.get("role_id")), str(payload.get("report_type")), grant
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
-@router.post('/patents/{patent_id}/documents/jobs/{job_id}/retry')
-def retry_document_job(patent_id: str, job_id: str, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user)
-    item = get_doc('documents', job_id)
-    if item.get('patent_id') != patent_id: raise HTTPException(404, 'Document job not found.')
-    return generate_document(patent_id, {'document_type': item.get('document_type', 'PATENT_APPLICATION')}, user)
 
-@router.get('/patents/{patent_id}/documents/{document_id}/download')
-def download_document(patent_id: str, document_id: str, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user)
-    item = get_doc('documents', document_id)
-    if item.get('patent_id') != patent_id: raise HTTPException(404, 'Document not found.')
-    try:
-        url = bucket().blob(item['storage_key']).generate_signed_url(version='v4', expiration=300, method='GET')
-    except Exception as exc: raise HTTPException(503, f'Unable to create a download link: {exc}') from exc
-    return {'download_url': url, 'expires_in_seconds': 300, 'file_name': item.get('file_name')}
+@router.get("/reports")
+def report_catalog(user: dict = Depends(active_user)):
+    ensure_permission(user, "REPORTS_VIEW")
+    return [
+        {**row, "can_download": can_download_report(user, row["report_type"])}
+        for row in REPORT_TYPES
+    ]
 
-@router.get('/patents/{patent_id}/documents/{document_id}/versions')
-def document_versions(patent_id: str, document_id: str, user: dict = Depends(active_user)):
-    _owned_get('patents', patent_id, user)
-    item = get_doc('documents', document_id)
-    if item.get('patent_id') != patent_id: raise HTTPException(404, 'Document not found.')
-    return [{'id': item['id'], 'version': item.get('version', 1), 'created_at': item.get('created_at'), 'file_name': item.get('file_name')}]
 
-@router.get('/rbac/matrix')
-def rbac_matrix(_: dict = Depends(require_roles('ADMIN', 'SUPER_ADMIN'))):
-    return {'roles': ['SUPER_ADMIN', 'ADMIN', 'PATENT_AGENT', 'INNOVATOR'], 'permissions': ['users.manage', 'patents.assign', 'reports.view'], 'note': 'Role assignment is enforced by the backend; custom permission matrix editing is not implemented in this Firebase migration.'}
-
-@router.get('/reports/permissions/matrix')
-def report_permissions_matrix(_: dict = Depends(require_roles('ADMIN', 'SUPER_ADMIN'))):
-    return {'roles': ['SUPER_ADMIN', 'ADMIN', 'PATENT_AGENT', 'INNOVATOR'], 'report_types': ['patents', 'assignments'], 'note': 'Static baseline; editable report-permission matrices from the original SQL backend require a dedicated migration.'}
-
-@router.get('/reports/{report_type}/export')
+@router.get("/reports/{report_type}/export")
 def export_report(report_type: str, user: dict = Depends(active_user)):
-    from fastapi.responses import JSONResponse
-    data = report(report_type, user)
-    return JSONResponse(content={'report_type': report_type, 'generated_at': now_iso(), 'data': data}, headers={'Content-Disposition': f'attachment; filename="{report_type}-report.json"'})
+    ensure_permission(user, "REPORTS_VIEW")
+    if report_type not in REPORT_TYPE_NAMES:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown report type.")
+    if not can_download_report(user, report_type):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Your role is not permitted to download this report.",
+        )
+    rows = _report_rows(report_type, user)
+    buffer = io.StringIO()
+    if rows:
+        writer = csv.DictWriter(buffer, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers=_content_disposition(f"{report_type}.csv"),
+    )
+
+
+@router.get("/reports/{report_type}")
+def run_report(report_type: str, user: dict = Depends(active_user)):
+    ensure_permission(user, "REPORTS_VIEW")
+    if report_type not in REPORT_TYPE_NAMES:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown report type.")
+    rows = _report_rows(report_type, user)
+    meta = next(row for row in REPORT_TYPES if row["report_type"] == report_type)
+    return {
+        "report_type": report_type,
+        "label": meta["label"],
+        "generated_at": _now(),
+        "row_count": len(rows),
+        "rows": rows,
+    }
+
+
+# ---------------------------------------------------------------------------
+# RBAC
+# ---------------------------------------------------------------------------
+
+
+@router.get("/rbac/matrix")
+def rbac_matrix(user: dict = Depends(active_user)):
+    if not is_super_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin access required.")
+    return matrix()
+
+
+@router.post("/rbac/toggle")
+def rbac_toggle(
+    payload: dict, grant: bool = Query(...), user: dict = Depends(active_user)
+):
+    if not is_super_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin access required.")
+    try:
+        return toggle_grant(
+            int(payload.get("role_id")), int(payload.get("permission_id")), grant
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+@router.get("/rbac/users")
+def rbac_users(user: dict = Depends(active_user)):
+    if not is_super_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin access required.")
+    users = sort_docs(list_docs("users"), "created_at")
+    return [
+        {
+            "id": doc["id"],
+            "email": doc.get("email") or "",
+            "full_name": doc.get("full_name") or "",
+            "account_status": user_out(doc)["account_status"],
+            "is_active": doc.get("is_active", True),
+            "roles": list(doc.get("role_codes") or []),
+            "created_at": doc.get("created_at"),
+        }
+        for doc in users
+    ]
+
+
+@router.post("/rbac/users/{target_id}/roles")
+def assign_role(target_id: str, payload: dict, user: dict = Depends(active_user)):
+    if not is_super_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin access required.")
+    role_code = str(payload.get("role_code") or "").upper()
+    if role_code not in ALL_ROLE_CODES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown role code.")
+    target = get_doc("users", target_id)
+    roles = set(target.get("role_codes") or [])
+    roles.add(role_code)
+    patch_doc("users", target_id, {"role_codes": sorted(roles)})
+    return user_out(get_doc("users", target_id))
+
+
+@router.delete("/rbac/users/{target_id}/roles/{role_code}")
+def revoke_role(target_id: str, role_code: str, user: dict = Depends(active_user)):
+    if not is_super_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super Admin access required.")
+    role_code = role_code.upper()
+    if role_code not in ALL_ROLE_CODES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown role code.")
+    target = get_doc("users", target_id)
+    roles = set(target.get("role_codes") or [])
+    if target_id == user["uid"] and role_code == "SUPER_ADMIN":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "You cannot revoke your own Super Admin role.",
+        )
+    if role_code not in roles:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "The user does not hold that role.")
+    roles.discard(role_code)
+    if not roles:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Every user must keep at least one role."
+        )
+    patch_doc("users", target_id, {"role_codes": sorted(roles)})
+    return user_out(get_doc("users", target_id))
