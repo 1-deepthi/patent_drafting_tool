@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Browser-side Firebase Authentication in the React client (`src/lib/firebase.ts`, `AuthContext`), with Google popup and redirect fallback, a configuration-error banner, and a 30-minute idle sign-out.
 - Offline backend test suite (`backend/tests/`) covering boot, the mounted frontend contract, RBAC, stub drafting, and DOCX rendering — no Firebase credentials required.
 - Runtime capability probe (`GET /api/config/capabilities`) and configurable deployment limits: `DEPLOYMENT_TARGET`, `MAX_UPLOAD_SIZE_BYTES`, and `PDF_CONVERSION_ENABLED`. The frontend pre-checks upload sizes and hides PDF generation when the deployment cannot run LibreOffice.
+- Inline `FIREBASE_SERVICE_ACCOUNT_JSON` credentials for hosts without a mountable secret file, such as Vercel.
 
 ### Changed
 

@@ -318,3 +318,16 @@ def test_pdf_gate_rejects_pdf_when_conversion_is_disabled(
     resources._ensure_format_supported("DOCX")
     with pytest.raises(HTTPException):
         resources._ensure_format_supported("ODT")
+
+
+def test_inline_service_account_json_is_validated() -> None:
+    from app.core import firebase
+
+    assert firebase._credentials_from_json("") is None
+    with pytest.raises(firebase.FirebaseNotConfigured):
+        firebase._credentials_from_json("{not-json")
+    with pytest.raises(firebase.FirebaseNotConfigured):
+        firebase._credentials_from_json("[]")
+    # Parsed JSON that is not a usable certificate also fails as configuration.
+    with pytest.raises(firebase.FirebaseNotConfigured):
+        firebase._credentials_from_json('{"type": "service_account"}')

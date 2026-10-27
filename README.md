@@ -308,6 +308,7 @@ Copy from `backend/.env.example`. Never commit `.env` or `secrets/`.
 |---|---|---|---|
 | `FIREBASE_PROJECT_ID` | Yes | `your-firebase-project-id` | Firebase project for Auth + Firestore |
 | `FIREBASE_SERVICE_ACCOUNT_PATH` | Yes | `secrets/firebase-service-account.json` | Admin SDK credentials (server only) |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | No | _(empty)_ | Inline credentials JSON for hosts without a mountable file (Vercel); keep it in the platform secret manager |
 | `FIREBASE_STORAGE_BUCKET` | For uploads | `your-firebase-storage-bucket` | File + template storage bucket |
 | `FIREBASE_EMULATOR_HOST` | No | _(empty)_ | Only when using the Firebase Emulator Suite |
 | `BOOTSTRAP_ADMIN_EMAIL` | Yes (first run) | `you@example.com` | First login with this email → `SUPER_ADMIN` |

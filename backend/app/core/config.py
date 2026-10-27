@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     environment: str = 'development'
     firebase_project_id: str = ''
     firebase_service_account_path: str = 'secrets/firebase-service-account.json'
+    # Inline JSON for hosts that cannot mount a file (Vercel, Cloud Run secrets).
+    # Takes precedence over the path; store it in the platform's secret manager.
+    firebase_service_account_json: str = ''
     firebase_storage_bucket: str = ''
     firebase_emulator_host: str = ''
     bootstrap_admin_email: str = ''

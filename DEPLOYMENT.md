@@ -50,6 +50,7 @@ production (`pydantic-settings`; see `backend/app/core/config.py`). Set:
 | `ENVIRONMENT` | `production` |
 | `FIREBASE_PROJECT_ID` | The production project ID |
 | `FIREBASE_SERVICE_ACCOUNT_PATH` | Path to the mounted service-account JSON (for example `/run/secrets/firebase-service-account.json`) |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | _(optional)_ Inline JSON for hosts that cannot mount a file; takes precedence over the path |
 | `FIREBASE_STORAGE_BUCKET` | The production bucket |
 | `FIREBASE_EMULATOR_HOST` | Empty (never set in production) |
 | `BOOTSTRAP_ADMIN_EMAIL` | An address you control, for the first login |
@@ -229,9 +230,12 @@ Running the backend as a Vercel Python function:
    above that are clamped, never honoured.
 2. Set `PDF_CONVERSION_ENABLED=false`. PDF jobs return `400`; the UI reads
    `GET /api/config/capabilities` and hides the PDF button.
-3. Keep `CORS_ORIGINS` and `ALLOWED_HOSTS` set to the deployed domains; do not
+3. Inject `FIREBASE_SERVICE_ACCOUNT_JSON` from Vercel's secret store. The
+   function filesystem is read-only except `/tmp`, so the path-based
+   credential file from §2 is not available.
+4. Keep `CORS_ORIGINS` and `ALLOWED_HOSTS` set to the deployed domains; do not
    widen them to `*` to work around a CORS error.
-4. Document generation is synchronous. It must finish inside the function
+5. Document generation is synchronous. It must finish inside the function
    duration limit (300 s Hobby / 800 s Pro); the container shape has no such
    ceiling.
 
