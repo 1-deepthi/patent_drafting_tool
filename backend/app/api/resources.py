@@ -12,6 +12,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import PurePath
+from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
@@ -134,18 +135,49 @@ def _title_map() -> dict[str, str]:
     }
 
 
+MAX_DOWNLOAD_FILENAME = 150
+
+
 def _clean_filename(name: str) -> str:
-    safe = (
-        PurePath(name or "download")
-        .name.replace('"', "'")
-        .replace("\r", " ")
-        .replace("\n", " ")
-    )
+    """Reduce a user-supplied name to a header-safe basename.
+
+    Control characters become spaces so a newline cannot start a header,
+    quotes are replaced because they delimit the `filename` parameter, and
+    backslashes are replaced because Windows names use them as separators
+    even though `PurePath` on Linux does not.
+    """
+    safe = PurePath(name or "download").name
+    safe = "".join(ch if ch.isprintable() else " " for ch in safe)
+    safe = safe.replace('"', "'").replace("\\", "_").strip()
+    if len(safe) > MAX_DOWNLOAD_FILENAME:
+        suffix = PurePath(safe).suffix
+        keep = MAX_DOWNLOAD_FILENAME - len(suffix)
+        safe = f"{safe[:keep]}{suffix}" if keep > 0 else safe[:MAX_DOWNLOAD_FILENAME]
     return safe or "download"
 
 
 def _content_disposition(filename: str) -> dict[str, str]:
-    return {"Content-Disposition": f'attachment; filename="{_clean_filename(filename)}"'}
+    """Always-ASCII `filename` plus RFC 5987 `filename*` for other scripts.
+
+    Starlette encodes headers as Latin-1, so a Japanese or emoji filename in
+    the plain parameter would raise `UnicodeEncodeError` and turn a download
+    into a 500. The ASCII fallback keeps old clients working; modern browsers
+    prefer the UTF-8 parameter.
+    """
+    safe = _clean_filename(filename)
+    ascii_name = safe.encode("ascii", "replace").decode("ascii")
+    return {
+        "Content-Disposition": (
+            f'attachment; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{quote(safe, safe='')}"
+        )
+    }
+
+
+def _csv_safe(value) -> str:
+    """Neutralise spreadsheet formulas in exported CSV cells."""
+    text = "" if value is None else str(value)
+    return f"'{text}" if text.startswith(("=", "+", "-", "@", "\t", "\r")) else text
 
 
 def _now() -> str:
@@ -2086,7 +2118,12 @@ def export_report(report_type: str, user: dict = Depends(active_user)):
     if rows:
         writer = csv.DictWriter(buffer, fieldnames=list(rows[0].keys()))
         writer.writeheader()
-        writer.writerows(rows)
+        # Spreadsheet apps treat a leading =, +, -, or @ as a formula. A
+        # user-controlled title or name must not execute when an admin opens
+        # the exported file.
+        writer.writerows(
+            {key: _csv_safe(value) for key, value in row.items()} for row in rows
+        )
     return Response(
         content=buffer.getvalue(),
         media_type="text/csv; charset=utf-8",
