@@ -746,3 +746,33 @@ def test_request_id_is_echoed_and_untrusted_values_are_replaced(
     assert generated != "bad value\r\nx: y"
     assert len(generated) == 32
     assert all(char in "0123456789abcdef" for char in generated)
+
+
+def test_firebase_recovers_from_a_failed_client_initialisation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core import firebase
+
+    original = (firebase._app, firebase._db, firebase._bucket)
+    calls = {"count": 0}
+
+    def flaky_client(app):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("credentials unavailable")
+        return "db-sentinel"
+
+    try:
+        firebase._app = object()
+        firebase._db = None
+        firebase._bucket = None
+        monkeypatch.setattr(firebase.firestore, "client", flaky_client)
+
+        with pytest.raises(RuntimeError):
+            firebase.initialize_firebase()
+
+        # The failed attempt must not leave db() returning None on the retry.
+        firebase.initialize_firebase()
+        assert firebase._db == "db-sentinel"
+    finally:
+        firebase._app, firebase._db, firebase._bucket = original
