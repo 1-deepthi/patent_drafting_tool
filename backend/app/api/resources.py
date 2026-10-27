@@ -11,7 +11,7 @@ import io
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import PurePath
 from urllib.parse import quote
 
@@ -90,6 +90,7 @@ from app.services.rbac import (
     toggle_report_permission,
 )
 from app.services.repository import (
+    allocate_counter,
     create_doc,
     delete_doc,
     get_doc,
@@ -97,6 +98,7 @@ from app.services.repository import (
     now_iso,
     patch_doc,
     query_docs,
+    set_latest_version,
     sort_docs,
 )
 from app.services.storage import (
@@ -1487,6 +1489,76 @@ def _ensure_format_supported(output_format: str) -> None:
         )
 
 
+GENERATION_STATUSES = {"Under Review", "Draft Generated"}
+STALE_JOB_AFTER = timedelta(minutes=15)
+
+
+def _assert_generation_allowed(patent: dict) -> None:
+    if patent.get("application_status") not in GENERATION_STATUSES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Document generation requires the application to be Under Review "
+            "or Draft Generated.",
+        )
+
+
+def _timestamp(value) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _reap_stale_jobs(patent_id: str) -> None:
+    """Mark abandoned Processing jobs failed so the UI can retry them.
+
+    Generation runs in-process (ADR-003); if the worker dies or a deploy
+    interrupts it, the job would otherwise stay Processing forever.
+    """
+    cutoff = datetime.now(timezone.utc) - STALE_JOB_AFTER
+    jobs = query_docs(
+        "document_jobs", filters=[("patent_application_id", "==", patent_id)]
+    )
+    for job in jobs:
+        if job.get("status") != "Processing":
+            continue
+        started = _timestamp(job.get("started_at") or job.get("created_at"))
+        if started is None or started > cutoff:
+            continue
+        log_event(
+            logger,
+            logging.WARNING,
+            "stale_document_job",
+            patent_id=patent_id,
+            job_id=job["id"],
+        )
+        patch_doc(
+            "document_jobs",
+            job["id"],
+            {
+                "status": "Failed",
+                "error_message": (
+                    "Generation did not finish within 15 minutes and was "
+                    "marked failed. Retry the job."
+                ),
+                "completed_at": _now(),
+            },
+        )
+
+
+def _job_error_message(exc: Exception) -> str:
+    """Keep curated errors; replace unexpected ones with a stable message."""
+    if isinstance(exc, docgen.DocumentGenerationError):
+        return str(exc)
+    return (
+        "Document generation failed unexpectedly. Try again, or ask an "
+        "administrator to check the server logs."
+    )
+
+
 def _run_generation(
     patent: dict,
     output_format: str,
@@ -1549,13 +1621,20 @@ def _run_generation(
         versions = query_docs(
             "document_versions", filters=[("patent_application_id", "==", patent_id)]
         ) if document else []
-        version_number = 1 + max(
+        previous_max = max(
             [
                 int(doc.get("version_number") or 0)
                 for doc in versions
                 if doc.get("document_id") == (document or {}).get("id")
             ]
             or [0]
+        )
+        # The counter document makes concurrent generations serialise on one
+        # Firestore transaction instead of both reading the same max version.
+        version_number = allocate_counter(
+            "document_counters",
+            f"{patent_id}:{output_format}:{DOCUMENT_TYPE}",
+            floor=previous_max,
         )
         path = (
             f"documents/{patent_id}/{output_format.lower()}/v{version_number}.{extension}"
@@ -1570,30 +1649,30 @@ def _run_generation(
             )
         )
         stamp = _now()
+        document_fields = {
+            "template_id": (template_doc or {}).get("id"),
+            "generated_by": user["uid"],
+            "generated_at": stamp,
+            "stored_path": path,
+        }
         if document is None:
+            # Deterministic ID: two first-time generations that race would
+            # otherwise create two document records for the same format.
             document = create_doc(
                 "documents",
                 {
                     "patent_application_id": patent_id,
-                    "template_id": (template_doc or {}).get("id"),
                     "document_type": DOCUMENT_TYPE,
                     "output_format": output_format,
                     "watermark_status": "DRAFT",
-                    "generated_by": user["uid"],
-                    "generated_at": stamp,
-                    "stored_path": path,
+                    **document_fields,
+                    "latest_version": version_number,
                 },
+                doc_id=f"{patent_id}:{DOCUMENT_TYPE}:{output_format}",
             )
         else:
-            document = patch_doc(
-                "documents",
-                document["id"],
-                {
-                    "template_id": (template_doc or {}).get("id"),
-                    "generated_by": user["uid"],
-                    "generated_at": stamp,
-                    "stored_path": path,
-                },
+            document = set_latest_version(
+                "documents", document["id"], version_number, document_fields
             )
         create_doc(
             "document_versions",
@@ -1629,13 +1708,22 @@ def _run_generation(
             },
         )
     except Exception as exc:  # noqa: BLE001 - recorded on the job for the UI
-        message = str(exc) or exc.__class__.__name__
+        if not isinstance(exc, docgen.DocumentGenerationError):
+            log_event(
+                logger,
+                logging.ERROR,
+                "document_generation_failed",
+                exc_info=True,
+                patent_id=patent_id,
+                output_format=output_format,
+                error_type=type(exc).__name__,
+            )
         return patch_doc(
             "document_jobs",
             job["id"],
             {
                 "status": "Failed",
-                "error_message": message,
+                "error_message": _job_error_message(exc),
                 "completed_at": _now(),
             },
         )
@@ -1656,6 +1744,7 @@ def list_documents(patent_id: str, user: dict = Depends(active_user)):
 def list_document_jobs(patent_id: str, user: dict = Depends(active_user)):
     require_patent(patent_id, user)
     ensure_permission(user, "DOCUMENTS_VIEW")
+    _reap_stale_jobs(patent_id)
     jobs = query_docs(
         "document_jobs", filters=[("patent_application_id", "==", patent_id)]
     )
@@ -1674,14 +1763,10 @@ def generate_document(
             status.HTTP_403_FORBIDDEN,
             "Only the assigned Patent Agent or an Admin can generate documents.",
         )
-    if patent.get("application_status") not in {"Under Review", "Draft Generated"}:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "Document generation requires the application to be Under Review "
-            "or Draft Generated.",
-        )
+    _assert_generation_allowed(patent)
     output_format = str(payload.get("output_format") or "DOCX").upper()
     _ensure_format_supported(output_format)
+    _reap_stale_jobs(patent_id)
     job = _run_generation(patent, output_format, user)
     return document_job_out(job)
 
@@ -1704,6 +1789,7 @@ def retry_document_job(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "Only failed jobs can be retried."
         )
+    _assert_generation_allowed(patent)
     output_format = str(job.get("output_format") or "DOCX").upper()
     _ensure_format_supported(output_format)
     retried = _run_generation(patent, output_format, user, retried_from_job_id=job_id)
@@ -1821,8 +1907,12 @@ async def upload_template(
         for doc in list_docs("templates")
         if doc.get("document_type") == document_type
     ]
-    version_number = 1 + max(
-        [int(doc.get("version_number") or 0) for doc in existing] or [0]
+    version_number = allocate_counter(
+        "template_counters",
+        document_type,
+        floor=max(
+            [int(doc.get("version_number") or 0) for doc in existing] or [0]
+        ),
     )
     path = f"templates/{re.sub(r'[^a-z0-9]+', '-', document_type.lower())}/v{version_number}.docx"
     _storage_guard(

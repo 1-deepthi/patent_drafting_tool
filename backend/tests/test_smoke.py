@@ -663,6 +663,20 @@ def test_docx_content_is_checked_before_parsing() -> None:
         uploads.assert_safe_docx(b"PK\x03\x04not-really-a-zip")
 
 
+def test_unexpected_generation_errors_are_not_echoed() -> None:
+    from app.api import resources
+    from app.services import documents
+
+    curated = documents.DocumentGenerationError("Generate every AI draft first.")
+    assert resources._job_error_message(curated) == "Generate every AI draft first."
+
+    unexpected = resources._job_error_message(
+        RuntimeError("C:/secret/path/to/template.docx")
+    )
+    assert "secret" not in unexpected
+    assert "server logs" in unexpected
+
+
 def test_request_id_is_echoed_and_untrusted_values_are_replaced(
     client: TestClient,
 ) -> None:
