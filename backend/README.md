@@ -30,7 +30,14 @@ Everything else lives in `app/core/` (config, Firebase init, guards) and
 6. **Project settings → Service accounts → Generate new private key** → save
    the downloaded JSON as `secrets/firebase-service-account.json` (create the
    folder; it is git-ignored).
-7. Copy `.env.example` to `.env`, then set `FIREBASE_PROJECT_ID`,
+7. From the repository root, deploy the client rules with
+   `firebase deploy --only firestore:rules,storage` (after
+   `firebase login` and `firebase use --add`). The browser never talks to
+   Firestore or Storage directly, so `firestore.rules` and `storage.rules`
+   deny every client request while the Admin SDK keeps full access. This
+   project does not use the Realtime Database; Firestore is the only system
+   of record (ADR-005).
+8. Copy `.env.example` to `.env`, then set `FIREBASE_PROJECT_ID`,
    `FIREBASE_STORAGE_BUCKET`, and `BOOTSTRAP_ADMIN_EMAIL`.
 
 The service-account JSON and `.env` contain sensitive values. Do not commit
