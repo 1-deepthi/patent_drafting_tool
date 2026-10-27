@@ -7,18 +7,24 @@ export default function PendingApprovalPage() {
   const { user, status, refreshMe, logout } = useAuth();
   const navigate = useNavigate();
 
-  // Poll every 30s in case a Super Admin approves while this tab is open.
+  // Poll only while there is still something to wait for. Once the user is
+  // approved, rejected, or signed out, the interval is torn down instead of
+  // firing a request every 30s against a dead session.
   useEffect(() => {
+    if (status !== "pending") return;
     const interval = setInterval(() => {
-      refreshMe();
+      void refreshMe();
     }, 30_000);
     return () => clearInterval(interval);
-  }, [refreshMe]);
+  }, [status, refreshMe]);
 
   useEffect(() => {
     if (status === "approved" && user) {
       const home = user.roles.map((r) => ROLE_HOME[r]).find(Boolean) || "/";
       navigate(home, { replace: true });
+    }
+    if (status === "unauthenticated") {
+      navigate("/login", { replace: true });
     }
   }, [status, user, navigate]);
 

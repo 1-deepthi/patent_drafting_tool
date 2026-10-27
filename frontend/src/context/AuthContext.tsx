@@ -35,6 +35,8 @@ interface AuthContextValue {
   permissions: string[];
   /** Set when Firebase Web config is missing from the build. */
   configError: string | null;
+  /** Set when the API could not describe the signed-in user (e.g. 5xx). */
+  sessionError: string | null;
   hasPermission: (code: string) => boolean;
   hasRole: (code: string) => boolean;
   signInWithGoogle: () => Promise<void>;
@@ -67,6 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [configError, setConfigError] = useState<string | null>(
     isFirebaseConfigured() ? null : new FirebaseConfigError().message,
   );
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const lastActivityRef = useRef<number>(Date.now());
 
   const clearSession = useCallback(() => {
@@ -98,6 +101,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const me = await apiFetch<MeResponse>("/api/auth/me");
       setUser(me.user);
       setPermissions(me.permissions);
+      setSessionError(null);
       setStatus(
         PENDING_ACCOUNT_STATUSES.has(me.user.account_status) ? "pending" : "approved",
       );
@@ -110,6 +114,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch {
           // nothing else to do — the local state is cleared below
         }
+      } else {
+        setSessionError(
+          error instanceof Error
+            ? error.message
+            : "The API could not load your account. Try again shortly.",
+        );
       }
       clearSession();
     }
@@ -154,6 +164,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithGoogle = useCallback(async () => {
     const auth = firebaseAuth();
+    setSessionError(null);
     try {
       await signInWithPopup(auth, GOOGLE_PROVIDER);
     } catch (error) {
@@ -208,6 +219,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       permissions,
       configError,
+      sessionError,
       hasPermission,
       hasRole,
       signInWithGoogle,
@@ -219,6 +231,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       permissions,
       configError,
+      sessionError,
       hasPermission,
       hasRole,
       signInWithGoogle,

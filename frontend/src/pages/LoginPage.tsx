@@ -10,12 +10,14 @@ const SIGN_IN_ERROR_MESSAGES: Record<string, string> = {
     "This domain is not authorised for sign-in. Add it under Firebase Authentication → Settings → Authorized domains.",
   "auth/operation-not-allowed":
     "Google sign-in is not enabled for this Firebase project. Enable it under Authentication → Sign-in method.",
+  "auth/configuration-not-found":
+    "Firebase Authentication is not fully configured. Confirm Google sign-in is enabled and this host is an authorised domain.",
   "auth/network-request-failed":
-    "Could not reach Firebase. Check your connection and try again.",
+    "Could not reach Firebase. Check your connection and try again. A browser that blocks accounts.google.com cannot complete sign-in.",
 };
 
 export default function LoginPage() {
-  const { status, user, configError, signInWithGoogle } = useAuth();
+  const { status, user, configError, sessionError, signInWithGoogle } = useAuth();
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -36,10 +38,12 @@ export default function LoginPage() {
       // onAuthStateChanged in AuthContext takes over from here.
     } catch (err) {
       const code = (err as { code?: string } | null)?.code ?? "";
-      setError(
+      const message =
         SIGN_IN_ERROR_MESSAGES[code] ||
-          (err instanceof Error ? err.message : "Google sign-in failed. Please try again."),
-      );
+        (err instanceof Error ? err.message : "Google sign-in failed. Please try again.");
+      // Keep the raw code visible for codes we do not map, so a support report
+      // names the actual failure instead of a generic message.
+      setError(code && !SIGN_IN_ERROR_MESSAGES[code] ? `${message} (${code})` : message);
     } finally {
       setSubmitting(false);
     }
@@ -99,6 +103,12 @@ export default function LoginPage() {
         {error && (
           <p role="alert" className="text-center text-sm text-red-600">
             {error}
+          </p>
+        )}
+
+        {!error && sessionError && (
+          <p role="alert" className="text-center text-sm text-red-600">
+            {sessionError}
           </p>
         )}
       </div>

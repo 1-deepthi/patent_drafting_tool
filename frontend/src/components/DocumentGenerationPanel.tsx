@@ -11,6 +11,7 @@ import type {
   DocumentOut,
   DocumentVersionOut,
 } from "../lib/types";
+import { LoadingState } from "./LoadingState";
 
 interface Props {
   patentId: string;
@@ -35,6 +36,7 @@ export function DocumentGenerationPanel({
   const [retrying, setRetrying] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<RuntimeCapabilities | null>(null);
+  const [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false);
 
   async function loadDocuments() {
     try {
@@ -67,6 +69,9 @@ export function DocumentGenerationPanel({
       .catch(() => {
         // Capabilities are an enhancement; keep the full UI if the endpoint
         // is unreachable and let the backend reject what it cannot do.
+      })
+      .finally(() => {
+        if (!cancelled) setCapabilitiesLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -163,9 +168,16 @@ export function DocumentGenerationPanel({
       <h3 className="mb-3 text-sm font-semibold text-slate-700">Documents</h3>
 
       {error && (
-        <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <div
+          role="alert"
+          className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+        >
           {error}
         </div>
+      )}
+
+      {(documents === null || jobs === null) && (
+        <LoadingState compact label="Loading documents…" />
       )}
 
       {!statusAllowsGeneration && (
@@ -200,7 +212,12 @@ export function DocumentGenerationPanel({
             {pdfEnabled && (
               <button
                 onClick={() => generate("PDF")}
-                disabled={generating !== null}
+                disabled={generating !== null || !capabilitiesLoaded}
+                title={
+                  capabilitiesLoaded
+                    ? undefined
+                    : "Checking whether PDF conversion is available…"
+                }
                 className="whitespace-nowrap rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-50"
               >
                 {generating === "PDF" ? "Generating…" : "Generate PDF"}
