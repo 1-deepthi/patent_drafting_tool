@@ -603,6 +603,36 @@ def test_gemini_key_is_a_header_and_never_echoed(
     assert seen["headers"]["x-goog-api-key"] == secret
 
 
+def test_upload_allowlist_and_content_sniffing() -> None:
+    from app.services import uploads
+
+    allowed = (".pdf", ".docx", ".txt")
+
+    with pytest.raises(uploads.UploadValidationError):
+        uploads.validate_upload("payload.exe", b"MZ", allowed_extensions=allowed, max_bytes=1024)
+
+    # The extension alone is not enough: an HTML file renamed to .pdf fails.
+    with pytest.raises(uploads.UploadValidationError) as exc:
+        uploads.validate_upload(
+            "report.pdf",
+            b"<html><script>alert(1)</script></html>",
+            allowed_extensions=allowed,
+            max_bytes=1024,
+        )
+    assert "does not match" in str(exc.value)
+
+    good = uploads.validate_upload(
+        "report.pdf", b"%PDF-1.7\n...", allowed_extensions=allowed, max_bytes=1024
+    )
+    assert good.mime_type == "application/pdf"
+
+    too_big = uploads.validate_upload
+    with pytest.raises(uploads.UploadTooLarge):
+        too_big(
+            "notes.txt", b"a" * 2048, allowed_extensions=allowed, max_bytes=1024
+        )
+
+
 def test_request_id_is_echoed_and_untrusted_values_are_replaced(
     client: TestClient,
 ) -> None:
