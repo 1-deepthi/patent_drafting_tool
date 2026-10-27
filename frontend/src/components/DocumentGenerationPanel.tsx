@@ -143,11 +143,15 @@ export function DocumentGenerationPanel({
     }
   }
 
-  async function downloadVersion(versionId: string, versionNumber: number) {
+  async function downloadVersion(
+    versionId: string,
+    versionNumber: number,
+    format: string,
+  ) {
     try {
       await apiDownload(
         `/api/patents/${patentId}/documents/versions/${versionId}/download`,
-        `document-v${versionNumber}.pdf`
+        `document-v${versionNumber}.${format === "DOCX" ? "docx" : "pdf"}`
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Download failed");
@@ -260,7 +264,9 @@ export function DocumentGenerationPanel({
                         )}
                       </span>
                       <button
-                        onClick={() => downloadVersion(v.id, v.version_number)}
+                        onClick={() =>
+                          downloadVersion(v.id, v.version_number, doc.output_format)
+                        }
                         className="text-blue-600 hover:underline"
                       >
                         Download

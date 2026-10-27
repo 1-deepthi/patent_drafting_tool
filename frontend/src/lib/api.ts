@@ -146,6 +146,28 @@ export async function apiUpload<T>(
   return (await response.json()) as T;
 }
 
+/** Read the filename from Content-Disposition.
+ *
+ * The backend sends an ASCII `filename` plus an RFC 5987 `filename*` for
+ * non-Latin-1 names; prefer the encoded form so a Japanese or emoji filename
+ * survives. `response.headers.get` only exposes this header because the API
+ * lists it in `Access-Control-Expose-Headers`.
+ */
+function filenameFromDisposition(disposition: string, fallback: string): string {
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded[1].trim());
+    } catch {
+      // malformed escape — fall through to the ASCII parameter
+    }
+  }
+  const quoted = disposition.match(/filename="([^"]*)"/i);
+  if (quoted) return quoted[1];
+  const bare = disposition.match(/filename=([^;]+)/i);
+  return bare ? bare[1].trim().replace(/^"|"$/g, "") : fallback;
+}
+
 /** For binary downloads (PDF/DOCX) — apiFetch always parses JSON, so this
  * fetches the blob directly, reads the filename from Content-Disposition,
  * and triggers a normal browser download via a throwaway <a> tag. */
@@ -165,8 +187,7 @@ export async function apiDownload(path: string, fallbackFilename: string): Promi
   }
 
   const disposition = response.headers.get("Content-Disposition") || "";
-  const match = disposition.match(/filename="?([^"]+)"?/);
-  const filename = match ? match[1] : fallbackFilename;
+  const filename = filenameFromDisposition(disposition, fallbackFilename);
 
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
