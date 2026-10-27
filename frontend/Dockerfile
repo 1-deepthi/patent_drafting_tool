@@ -7,16 +7,35 @@ RUN npm ci
 
 COPY . .
 
-# Vite has no runtime env — every VITE_* var is baked into the static
-# bundle at build time (see vite.config.ts / src/lib/api.ts), so it has to
+# Vite has no runtime env — every VITE_* var is baked into the static bundle
+# at build time (see vite.config.ts / src/lib/firebase.ts), so it has to
 # arrive as a build ARG, not a container-run-time environment variable.
-# Pass it at build time: `docker build --build-arg VITE_API_URL=https://api.example.com`.
+#
+# The Firebase values are the browser-safe Web SDK config, not secrets:
+# https://firebase.google.com/docs/projects/api-keys
+# Example:
+#   docker build \
+#     --build-arg VITE_API_URL=https://api.example.com \
+#     --build-arg VITE_FIREBASE_API_KEY=... \
+#     --build-arg VITE_FIREBASE_AUTH_DOMAIN=my-project.firebaseapp.com \
+#     --build-arg VITE_FIREBASE_PROJECT_ID=my-project \
+#     --build-arg VITE_FIREBASE_APP_ID=1:123:web:abc \
+#     .
 ARG VITE_API_URL
-ENV VITE_API_URL=$VITE_API_URL
-# Never bake the dev-login panel into a production bundle — the real gate
-# is server-side (backend DEV_LOGIN_ENABLED), but there's no reason to
-# even show the button. See .env.example's own note on this being cosmetic.
-ENV VITE_DEV_LOGIN_ENABLED=false
+ARG VITE_FIREBASE_API_KEY
+ARG VITE_FIREBASE_AUTH_DOMAIN
+ARG VITE_FIREBASE_PROJECT_ID
+ARG VITE_FIREBASE_STORAGE_BUCKET
+ARG VITE_FIREBASE_MESSAGING_SENDER_ID
+ARG VITE_FIREBASE_APP_ID
+
+ENV VITE_API_URL=$VITE_API_URL \
+    VITE_FIREBASE_API_KEY=$VITE_FIREBASE_API_KEY \
+    VITE_FIREBASE_AUTH_DOMAIN=$VITE_FIREBASE_AUTH_DOMAIN \
+    VITE_FIREBASE_PROJECT_ID=$VITE_FIREBASE_PROJECT_ID \
+    VITE_FIREBASE_STORAGE_BUCKET=$VITE_FIREBASE_STORAGE_BUCKET \
+    VITE_FIREBASE_MESSAGING_SENDER_ID=$VITE_FIREBASE_MESSAGING_SENDER_ID \
+    VITE_FIREBASE_APP_ID=$VITE_FIREBASE_APP_ID
 
 RUN npm run build
 

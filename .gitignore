@@ -38,6 +38,10 @@ yarn-error.log*
 # --- Local reference clones (never commit; see CONTRIBUTING.md) ---
 ref-repos/
 
+# --- Local tooling output ---
+.trace/
+backend/.trace/
+
 # --- OS / editors ---
 .DS_Store
 Thumbs.db
